@@ -39,6 +39,8 @@ process CPU_BASELINE {
 
 // Memory baseline process
 process MEM_BASELINE {
+    maxForks 1
+
     input:
     val intensity_gb
     val rep_id
