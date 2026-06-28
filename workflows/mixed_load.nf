@@ -7,9 +7,7 @@ nextflow.enable.dsl = 2
 // Sequential execution: CPU task then I/O task
 process SEQUENTIAL_MIXED {
     input:
-    val cpu_intensity
-    val io_intensity
-    val rep_id
+    tuple val(cpu_intensity), val(rep_id)
 
     output:
     path "sequential_mixed_*.csv"
@@ -21,16 +19,14 @@ process SEQUENTIAL_MIXED {
     # 2. Run I/O task (measure RAPL)
     # 3. Write CSV row with total energy and runtime
 
-    echo "sequential_mixed,sequential,${cpu_intensity},${io_intensity},${params.duration},0,0,${rep_id},\$(date -u +'%Y-%m-%dT%H:%M:%SZ')" > sequential_mixed_${rep_id}.csv
+    echo "sequential_mixed,sequential,${cpu_intensity},${params.duration},0,0,${rep_id},\$(date -u +'%Y-%m-%dT%H:%M:%SZ')" > sequential_mixed_${rep_id}.csv
     """
 }
 
 // Parallel execution: CPU + I/O tasks overlapped
 process PARALLEL_COMPLEMENTARY {
     input:
-    val cpu_intensity
-    val io_intensity
-    val rep_id
+    tuple val(cpu_intensity), val(rep_id)
 
     output:
     path "parallel_complementary_*.csv"
@@ -43,15 +39,14 @@ process PARALLEL_COMPLEMENTARY {
     # 3. Wait for both to complete (measure RAPL for total duration)
     # 4. Write CSV row
 
-    echo "parallel_complementary,parallel,${cpu_intensity},${io_intensity},${params.duration},0,0,${rep_id},\$(date -u +'%Y-%m-%dT%H:%M:%SZ')" > parallel_complementary_${rep_id}.csv
+    echo "parallel_complementary,parallel,${cpu_intensity},${params.duration},0,0,${rep_id},\$(date -u +'%Y-%m-%dT%H:%M:%SZ')" > parallel_complementary_${rep_id}.csv
     """
 }
 
 // Parallel competing execution: CPU + CPU tasks (control condition)
 process PARALLEL_COMPETING {
     input:
-    val cpu_intensity
-    val rep_id
+    tuple val(cpu_intensity), val(rep_id)
 
     output:
     path "parallel_competing_*.csv"
@@ -70,10 +65,10 @@ process PARALLEL_COMPETING {
 workflow mixed_load_workflow {
     // Intensity ratios: 25/75, 50/50, 75/25 CPU-to-I/O
     cpu_ratios = Channel.of(25, 50, 75)
-    rep_ids = Channel.of(1..params.repetitions as Integer)
+    rep_ids = Channel.of(1..params.repetitions.toInteger())
 
     // Run all three configurations
-    SEQUENTIAL_MIXED(cpu_ratios.combine(rep_ids), rep_ids)
-    PARALLEL_COMPLEMENTARY(cpu_ratios.combine(rep_ids), rep_ids)
-    PARALLEL_COMPETING(cpu_ratios.combine(rep_ids), rep_ids)
+    SEQUENTIAL_MIXED(cpu_ratios.combine(rep_ids))
+    PARALLEL_COMPLEMENTARY(cpu_ratios.combine(rep_ids))
+    PARALLEL_COMPETING(cpu_ratios.combine(rep_ids))
 }

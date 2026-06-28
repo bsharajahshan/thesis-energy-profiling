@@ -32,7 +32,7 @@ process GRANULARITY_SWEEP {
 workflow granularity_workflow {
     // Task count sweep: 1, 2, 4, 8
     task_counts = Channel.of(1, 2, 4, 8)
-    rep_ids = Channel.of(1..params.repetitions as Integer)
+    rep_ids = Channel.of(1..params.repetitions.toInteger())
 
-    GRANULARITY_SWEEP(task_counts.combine(rep_ids), rep_ids)
+    GRANULARITY_SWEEP(task_counts.combine(rep_ids))
 }
