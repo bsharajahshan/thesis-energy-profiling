@@ -219,3 +219,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project-specific: experiment results and generated plots
+results/
+figures/
+BASELINE_TEST_REPORT.md
