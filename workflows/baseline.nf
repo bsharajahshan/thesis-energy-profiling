@@ -6,7 +6,7 @@ nextflow.enable.dsl = 2
 
 // CPU baseline process
 process CPU_BASELINE {
-    publishDir "${params.results_dir}", mode: 'copy', overwrite: true
+    publishDir "${params.results_dir}/rq1_baseline/cpu", mode: 'copy', overwrite: true
 
     input:
     tuple val(threads), val(rep_id)
@@ -41,7 +41,7 @@ process CPU_BASELINE {
 // Memory baseline process
 process MEM_BASELINE {
     maxForks 1
-    publishDir "${params.results_dir}", mode: 'copy', overwrite: true
+    publishDir "${params.results_dir}/rq1_baseline/memory", mode: 'copy', overwrite: true
 
     input:
     tuple val(intensity_gb), val(rep_id)
@@ -76,7 +76,7 @@ process MEM_BASELINE {
 
 // I/O baseline process
 process IO_BASELINE {
-    publishDir "${params.results_dir}", mode: 'copy', overwrite: true
+    publishDir "${params.results_dir}/rq1_baseline/io", mode: 'copy', overwrite: true
 
     input:
     tuple val(io_pattern), val(rep_id)

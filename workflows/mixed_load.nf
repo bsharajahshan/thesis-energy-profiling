@@ -19,7 +19,7 @@ nextflow.enable.dsl = 2
 
 // Sequential execution: constituent workloads run one after another
 process SEQUENTIAL_MIXED {
-    publishDir "${params.results_dir}", mode: 'copy', overwrite: true
+    publishDir "${params.results_dir}/rq2_mixed/sequential", mode: 'copy', overwrite: true
 
     input:
     tuple val(combo), val(rep_id)
@@ -92,7 +92,7 @@ process SEQUENTIAL_MIXED {
 
 // Parallel execution: constituent workloads launched together, single RAPL window
 process PARALLEL_MIXED {
-    publishDir "${params.results_dir}", mode: 'copy', overwrite: true
+    publishDir "${params.results_dir}/rq2_mixed/parallel", mode: 'copy', overwrite: true
 
     input:
     tuple val(combo), val(rep_id)
