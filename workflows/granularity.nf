@@ -9,8 +9,7 @@ process GRANULARITY_SWEEP {
     publishDir "${params.results_dir}/rq3_granularity", mode: 'copy', overwrite: true
 
     input:
-    val task_count
-    val rep_id
+    tuple val(task_count), val(rep_id)
 
     output:
     path "granularity_*.csv"

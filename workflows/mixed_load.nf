@@ -60,7 +60,7 @@ process SEQUENTIAL_MIXED {
         NAME="\${T%%:*}"
         CMD="\${T#*:}"
 
-        RAPL_OUTPUT=\$(bash \${projectDir}/../scripts/measure_rapl.sh "\${CMD}" "rq2_sequential_\${NAME}")
+        RAPL_OUTPUT=\$(bash ${projectDir}/../scripts/measure_rapl.sh "\${CMD}" "rq2_sequential_\${NAME}")
 
         D=\$(echo "\${RAPL_OUTPUT}" | grep "^DURATION_S=" | cut -d= -f2)
         E=\$(echo "\${RAPL_OUTPUT}" | grep "^ENERGY_UJ=" | cut -d= -f2)
@@ -115,15 +115,20 @@ process PARALLEL_MIXED {
     RAM_CMD="stress-ng --vm 1 --vm-bytes 8G --timeout ${params.duration}s"
     IO_CMD="fio --ioengine=libaio --iodepth=16 --blocksize=4k --name=io_job --rw=write --size=1G --runtime=${params.duration} --time_based"
 
+    # Each command is wrapped in an outer subshell "( ... & ... & wait )" so
+    # that the bare `wait` only waits on jobs backgrounded *within that
+    # subshell* (the constituent workloads). Without the subshell, `wait`
+    # would also block on measure_rapl.sh's own backgrounded memory sampler
+    # (a job of the outer shell), hanging forever.
     case "${combo}" in
-      cpu_ram)     PARALLEL_CMD="(\${CPU_CMD}) & (\${RAM_CMD}) & wait";              TASK_COUNT=2 ;;
-      cpu_io)      PARALLEL_CMD="(\${CPU_CMD}) & (\${IO_CMD}) & wait";               TASK_COUNT=2 ;;
-      ram_io)      PARALLEL_CMD="(\${RAM_CMD}) & (\${IO_CMD}) & wait";               TASK_COUNT=2 ;;
-      cpu_ram_io)  PARALLEL_CMD="(\${CPU_CMD}) & (\${RAM_CMD}) & (\${IO_CMD}) & wait"; TASK_COUNT=3 ;;
+      cpu_ram)     PARALLEL_CMD="( (\${CPU_CMD}) & (\${RAM_CMD}) & wait )";              TASK_COUNT=2 ;;
+      cpu_io)      PARALLEL_CMD="( (\${CPU_CMD}) & (\${IO_CMD}) & wait )";               TASK_COUNT=2 ;;
+      ram_io)      PARALLEL_CMD="( (\${RAM_CMD}) & (\${IO_CMD}) & wait )";               TASK_COUNT=2 ;;
+      cpu_ram_io)  PARALLEL_CMD="( (\${CPU_CMD}) & (\${RAM_CMD}) & (\${IO_CMD}) & wait )"; TASK_COUNT=3 ;;
       *) echo "Unknown combination: ${combo}" >&2; exit 1 ;;
     esac
 
-    RAPL_OUTPUT=\$(bash \${projectDir}/../scripts/measure_rapl.sh "\${PARALLEL_CMD}" "rq2_parallel_${combo}")
+    RAPL_OUTPUT=\$(bash ${projectDir}/../scripts/measure_rapl.sh "\${PARALLEL_CMD}" "rq2_parallel_${combo}")
 
     DURATION_S=\$(echo "\${RAPL_OUTPUT}" | grep "^DURATION_S=" | cut -d= -f2)
     ENERGY_UJ=\$(echo "\${RAPL_OUTPUT}" | grep "^ENERGY_UJ=" | cut -d= -f2)

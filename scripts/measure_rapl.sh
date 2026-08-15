@@ -5,6 +5,11 @@
 # Usage: measure_rapl.sh "command to run" "task_name" "params_json"
 # Returns: duration_ns, energy_uj, average_power_w
 
+# Force a locale with '.' as the decimal separator. Under e.g. de_DE.UTF-8,
+# awk/bc emit ',' instead (e.g. "93,715" instead of "93.715"), which corrupts
+# the CSV (extra fields) and makes bc choke on comma-decimal arithmetic.
+export LC_ALL=C
+
 COMMAND="$1"
 TASK_NAME="$2"
 PARAMS="$3"

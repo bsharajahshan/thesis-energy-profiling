@@ -26,7 +26,7 @@ process CPU_BASELINE {
     TIMESTAMP=\$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 
     # Run RAPL measurement wrapper
-    RAPL_OUTPUT=\$(bash \${projectDir}/../scripts/measure_rapl.sh "stress-ng --cpu ${threads} --timeout ${params.duration}s" "\${TASK_NAME}")
+    RAPL_OUTPUT=\$(bash ${projectDir}/../scripts/measure_rapl.sh "stress-ng --cpu ${threads} --timeout ${params.duration}s" "\${TASK_NAME}")
 
     # Parse output (key=value format) and extract values
     DURATION_S=\$(echo "\${RAPL_OUTPUT}" | grep "^DURATION_S=" | cut -d= -f2)
@@ -62,7 +62,7 @@ process MEM_BASELINE {
 
     # Run RAPL measurement wrapper
     # Allocate memory: intensity in GB
-    RAPL_OUTPUT=\$(bash \${projectDir}/../scripts/measure_rapl.sh "stress-ng --vm 1 --vm-bytes ${intensity_gb}G --timeout ${params.duration}s" "\${TASK_NAME}")
+    RAPL_OUTPUT=\$(bash ${projectDir}/../scripts/measure_rapl.sh "stress-ng --vm 1 --vm-bytes ${intensity_gb}G --timeout ${params.duration}s" "\${TASK_NAME}")
 
     # Parse output
     DURATION_S=\$(echo "\${RAPL_OUTPUT}" | grep "^DURATION_S=" | cut -d= -f2)
@@ -103,7 +103,7 @@ process IO_BASELINE {
     esac
 
     # Run RAPL measurement wrapper with fio
-    RAPL_OUTPUT=\$(bash \${projectDir}/../scripts/measure_rapl.sh "fio --ioengine=libaio --iodepth=16 --blocksize=4k --name=io_job --rw=\${FIO_RW} --size=1G --runtime=${params.duration} --time_based" "\${TASK_NAME}")
+    RAPL_OUTPUT=\$(bash ${projectDir}/../scripts/measure_rapl.sh "fio --ioengine=libaio --iodepth=16 --blocksize=4k --name=io_job --rw=\${FIO_RW} --size=1G --runtime=${params.duration} --time_based" "\${TASK_NAME}")
 
     # Parse output
     DURATION_S=\$(echo "\${RAPL_OUTPUT}" | grep "^DURATION_S=" | cut -d= -f2)

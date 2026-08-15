@@ -21,6 +21,10 @@
 
 set -uo pipefail
 
+# Force a locale with '.' as the decimal separator — see measure_rapl.sh for
+# why (de_DE.UTF-8 etc. make awk/bc emit ',' and corrupt the CSV/arithmetic).
+export LC_ALL=C
+
 COMMAND="$1"
 TASK_NAME="${2:-validation_task}"
 REPS="${3:-5}"

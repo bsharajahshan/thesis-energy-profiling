@@ -1,0 +1,140 @@
+RQ2 smoke test report — testing-only handoff
+============================================
+
+Scope
+-----
+Testing only. No code changes to the repo — you fix; we re-test.
+
+Environment (test machine)
+--------------------------
+- Intel Core i7-8550U (4C/8T), x86_64, Linux
+- RAPL available at /sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj
+  — access fixed via `sudo chmod 644` (resets on reboot)
+- Installed: Nextflow 26.04.6, stress-ng, fio, Python 3.14 (homebrew) with
+  pandas/matplotlib/scipy in a venv (~/.venvs/thesis)
+- Note: main.nf requires Nextflow v24.x+ — machine has 26.x, fine
+
+What ran
+--------
+nextflow run workflows/main.nf --mode mixed --duration 10 --repetitions 1
+(smoke test, 4 combos x 2 modes)
+
+Results
+-------
+Only 1 of 8 runs produced a result:
+
+    rq2_mixed,rq2_mixed,sequential,cpu_ram,max,2,21.380,421997271,421.997271,,,1,2026-08-13T13:09:26Z
+
+- combination cpu_ram, sequential, duration 21.38s,
+  energy 421,997,271 uJ ≈ 422 J (~19.7 W avg)
+- cpu_util_pct / mem_util_pct are empty (,,)
+
+Bugs found (blocking)
+---------------------
+1. workflows/granularity.nf:39 — script won't compile.
+   GRANULARITY_SWEEP(task_counts.combine(rep_ids)) feeds a tuple channel
+   into a process with two separate `val` inputs. Blocks ALL modes since
+   Nextflow compiles every workflow up front.
+   Fix: declare `tuple val(task_count), val(rep_id)`.
+
+2. \${projectDir} unbound var.
+   In mixed_load.nf:63,126 and baseline.nf:29,65,106, \${projectDir} escapes
+   Nextflow's interpolation, so bash sees an unset variable → every
+   measure_rapl.sh call exits 1.
+   Fix: unescape to ${projectDir}.
+
+3. Parallel mode hangs forever.
+   mixed_load.nf:119-122 ends the parallel command with a bare `wait`.
+   measure_rapl.sh runs an infinite background mem-sampling loop in the same
+   shell, so bare `wait` blocks on it indefinitely (>10 min).
+   Fix: `wait` only on explicit workload PIDs ($!).
+
+4. Utilization columns empty.
+   Completed run has ,, for cpu_util_pct/mem_util_pct although
+   measure_rapl.sh prints them — the workflow's grep/parse doesn't extract
+   them.
+
+5. IMPORTANT: utilization columns are CORE to RQ2, not cosmetic.
+   Per README: cpu_util_pct/mem_util_pct are sampled from /proc as
+   independent evidence the workload actually loaded the system, separate
+   from the RAPL energy reading. Empty values undermine RQ2's evidence.
+
+6. RAPL validation against turbostat (scripts/validate_rapl.sh) has NOT
+   been run on this machine. README requires it once per machine before
+   trusting RAPL data (>10% discrepancy = flag). Pending prerequisite.
+
+7. RQ2 analysis path not ready. clean_data.py/stats.py assume the RQ1
+   schema (numeric intensity, subsystem grouping). RQ2 uses combination +
+   fixed "max" intensity — README says treat RQ2 analysis as manual/ad-hoc.
+
+Nextflow log analysis (.nextflow.log + rotations .1-.6)
+-------------------------------------------------------
+Full run history (7 runs):
+
+  Run  Time     Log      Outcome
+  1    15:08:28 .log.6   No tasks submitted (aborted early)
+  2    15:08:43 .log.5   SEQUENTIAL(4)+PARALLEL(1) exit 1 -> projectDir unbound
+  3    15:09:26 .log.4   SEQUENTIAL(1) COMPLETED (cpu_ram, 422J);
+                        PARALLEL(2) HUNG ~10min, SIGTERM, kill "No such process"
+  4    15:20:18 .log.3   PARALLEL(2)+(4) exit 1 -> $! unbound variable
+  5    15:21:18 .log.2   No tasks (compile check)
+  6    15:21:42 .log.1   No tasks (compile check)
+  7    15:22:37 .log     Only PARALLEL(1) submitted; SIGTERM 22s later;
+                        kill "No such process"
+
+New findings from logs:
+
+  A. Hang leaves orphaned process. In runs 3 and 7, Nextflow kill -TERM
+     failed with "No such process" — the .command.run had already exited
+     but the task stayed RUNNING. Parallel task's main shell dies while a
+     background child keeps the task alive. Matches bug #3 (bare wait +
+     infinite mem sampler).
+
+  B. Submission pattern inconsistent. Only PARALLEL_MIXED(1) was ever
+     submitted in run 7; SEQUENTIAL_MIXED submitted 0 times there.
+
+  C. Peak memory on the parallel hang: 16 GB. RAM stress-ng 8G + overhead
+     on a machine with 15.5 GB total (5.7 GB free at run start).
+     The 8GB VM stress-ng may be OOM-threatened on this machine.
+
+  D. Parallel tasks fail fast when they fail (exit 1 in ~150ms in runs
+     2 and 4) but hang forever when they don't fail (runs 3 and 7) —
+     binary behavior.
+
+Session 2 rerun (17:18-17:20, --mode mixed --duration 10 --repetitions 1)
+--------------------------------------------------------------------------
+NOTE: ran on the local test clone which already contains the temporary
+test fixes for bugs #1-#3 (granularity tuple, projectDir, PID wait) —
+NOT on the friend's pristine code. RQ1 baseline + util parsing still
+use the original code.
+
+RQ1 CPU baseline smoke test: ALL 4 PASSED
+  threads  energy_J  duration_s
+  1        122.1     10.03
+  2        162.6     10.08
+  4        194.2     10.19
+  8        246.8     10.14
+  -> clean monotonic scaling, RAPL readings look sensible
+
+RQ2 mixed smoke test: 2 of 8 completed, 1 killed, 5 pending
+  PARALLEL cpu_io : COMPLETED exit 0 - 11.32s, 182.5 J (util malformed)
+  PARALLEL ram_io : COMPLETED exit 0 - 16.33s, 226.3 J (util malformed)
+  SEQUENTIAL cpu_ram : killed by SIGTERM (exit 143) via tool timeout
+  (my PID-wait fix resolved the parallel hang - these 2 completed)
+
+8. NEW BUG - locale decimal separator corrupts util columns.
+   Machine has LC_NUMERIC=de_DE.UTF-8 -> awk 'printf "%.3f"' emits
+   "93,715" not "93.715" (confirmed with mawk 1.3.4).
+   - Parallel path: values pass straight into CSV -> row gets split
+     into 15 fields instead of 13 (e.g. ...,182.479819,93,715,54,209,1,...)
+   - Sequential path: bc chokes on comma decimals (syntax error, exit
+     confirmed) -> util arithmetic yields empty -> explains the ,, empty
+     util columns from session 1.
+   Fix: set LC_NUMERIC=C (or LANG=C) at top of measure_rapl.sh, or
+   export LC_ALL=C before awk/bc.
+
+Next steps
+----------
+- He fixes bugs #1-#8 (incl. new locale bug #8) and pushes.
+- We pull and re-run the RQ2 smoke test (expect 8 CSVs: 4 sequential/, 4 parallel/).
+- Then full run (--duration 60 --repetitions 5) once smoke passes.
