@@ -6,7 +6,7 @@ nextflow.enable.dsl = 2
 
 // CPU baseline process
 process CPU_BASELINE {
-    publishDir "${params.results_dir}", mode: 'copy', overwrite: true
+    publishDir "${params.results_dir}/rq1_baseline/cpu", mode: 'copy', overwrite: true
 
     input:
     tuple val(threads), val(rep_id)
@@ -26,7 +26,7 @@ process CPU_BASELINE {
     TIMESTAMP=\$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 
     # Run RAPL measurement wrapper
-    RAPL_OUTPUT=\$(bash \${projectDir}/../scripts/measure_rapl.sh "stress-ng --cpu ${threads} --timeout ${params.duration}s" "\${TASK_NAME}")
+    RAPL_OUTPUT=\$(bash ${projectDir}/../scripts/measure_rapl.sh "stress-ng --cpu ${threads} --timeout ${params.duration}s" "\${TASK_NAME}")
 
     # Parse output (key=value format) and extract values
     DURATION_S=\$(echo "\${RAPL_OUTPUT}" | grep "^DURATION_S=" | cut -d= -f2)
@@ -41,7 +41,7 @@ process CPU_BASELINE {
 // Memory baseline process
 process MEM_BASELINE {
     maxForks 1
-    publishDir "${params.results_dir}", mode: 'copy', overwrite: true
+    publishDir "${params.results_dir}/rq1_baseline/memory", mode: 'copy', overwrite: true
 
     input:
     tuple val(intensity_gb), val(rep_id)
@@ -62,7 +62,7 @@ process MEM_BASELINE {
 
     # Run RAPL measurement wrapper
     # Allocate memory: intensity in GB
-    RAPL_OUTPUT=\$(bash \${projectDir}/../scripts/measure_rapl.sh "stress-ng --vm 1 --vm-bytes ${intensity_gb}G --timeout ${params.duration}s" "\${TASK_NAME}")
+    RAPL_OUTPUT=\$(bash ${projectDir}/../scripts/measure_rapl.sh "stress-ng --vm 1 --vm-bytes ${intensity_gb}G --timeout ${params.duration}s" "\${TASK_NAME}")
 
     # Parse output
     DURATION_S=\$(echo "\${RAPL_OUTPUT}" | grep "^DURATION_S=" | cut -d= -f2)
@@ -76,7 +76,7 @@ process MEM_BASELINE {
 
 // I/O baseline process
 process IO_BASELINE {
-    publishDir "${params.results_dir}", mode: 'copy', overwrite: true
+    publishDir "${params.results_dir}/rq1_baseline/io", mode: 'copy', overwrite: true
 
     input:
     tuple val(io_pattern), val(rep_id)
@@ -103,7 +103,7 @@ process IO_BASELINE {
     esac
 
     # Run RAPL measurement wrapper with fio
-    RAPL_OUTPUT=\$(bash \${projectDir}/../scripts/measure_rapl.sh "fio --ioengine=libaio --iodepth=16 --blocksize=4k --name=io_job --rw=\${FIO_RW} --size=1G --runtime=${params.duration} --time_based" "\${TASK_NAME}")
+    RAPL_OUTPUT=\$(bash ${projectDir}/../scripts/measure_rapl.sh "fio --ioengine=libaio --iodepth=16 --blocksize=4k --name=io_job --rw=\${FIO_RW} --size=1G --runtime=${params.duration} --time_based" "\${TASK_NAME}")
 
     # Parse output
     DURATION_S=\$(echo "\${RAPL_OUTPUT}" | grep "^DURATION_S=" | cut -d= -f2)

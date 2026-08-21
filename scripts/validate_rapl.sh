@@ -21,13 +21,17 @@
 
 set -uo pipefail
 
+# Force a locale with '.' as the decimal separator — see measure_rapl.sh for
+# why (de_DE.UTF-8 etc. make awk/bc emit ',' and corrupt the CSV/arithmetic).
+export LC_ALL=C
+
 COMMAND="$1"
 TASK_NAME="${2:-validation_task}"
 REPS="${3:-5}"
 
 RAPL_PATH="/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj"
 ENERGY_MAX=4294967295  # 2^32 - 1, matches wraparound handling in measure_rapl.sh
-OUT_DIR="${RESULTS_DIR:-results/raw}"
+OUT_DIR="${RESULTS_DIR:-results/raw/validation}"
 OUT_FILE="${OUT_DIR}/rapl_validation.csv"
 TOLERANCE_PCT=10  # flag any rep where RAPL and turbostat disagree by more than this
 
