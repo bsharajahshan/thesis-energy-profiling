@@ -87,7 +87,9 @@ All commands run on the **Linux machine**. Development happens on Windows (edit,
 **Implementation status:**
 - **RQ1 (`baseline.nf`)** — implemented, smoke-tested end-to-end.
 - **RQ2 (`mixed_load.nf`)** — implemented, **not yet run on Linux**. Smoke-test it (see below) before trusting its output.
-- **RQ3 (`granularity.nf`)** — still a TODO stub. Running it will produce placeholder CSV rows, not real granularity data.
+- **RQ3 (`granularity.nf`)** — implemented, **not yet run at all**. Smoke-test it (see below) before a full run.
+
+**Before running anything above, note:** `nextflow.config` was recently changed to cap the local executor's resource pool at exactly one task's worth (`executor.$local.cpus = 4`, matching `process.cpus`). Without this, Nextflow could legally run two task instances concurrently, and since RAPL is one shared system-wide counter, overlapping measurement windows would silently corrupt both readings. This change hasn't been exercised on real hardware yet either — the first smoke test you run (any of RQ1/RQ2/RQ3 below) doubles as a check that Nextflow accepts it and doesn't stall.
 
 ### RQ1: Baseline Subsystem Profiling
 
@@ -136,7 +138,7 @@ This runs all 4 combinations × 2 modes (sequential, parallel) × repetitions = 
 
 ### RQ3: Task Granularity
 
-Sweep task count (1, 2, 4, 8) holding total work constant:
+Compares one large task against N smaller concurrent sub-tasks doing the same total work — CPU and RAM only, no I/O. N = 1, 2, 4, 8 sub-tasks; splitting divides the *resource* per sub-task (cores for CPU, GB for RAM), not the duration — each sub-task still runs for the full `--duration`. Two modes run automatically for every N: **parallel** (the main experiment — sub-tasks run concurrently, one RAPL window) and **sequential** (a secondary reference — sub-tasks run back-to-back, own RAPL windows, summed — used to isolate startup overhead from real concurrency effects). RAM sub-tasks are deliberately not bandwidth-capped; any contention between them is a reportable finding, not a bug.
 
 ```bash
 nextflow run workflows/main.nf \
@@ -145,7 +147,9 @@ nextflow run workflows/main.nf \
     --repetitions 5
 ```
 
-**Not yet implemented** — `granularity.nf` is still a TODO stub, so this currently writes placeholder rows, not real measurements. Output would land in `results/raw/rq3_granularity/` once implemented.
+This runs 2 subsystems × 4 N-values × 2 modes × repetitions = 80 runs by default. Output lands in `results/raw/rq3_granularity/cpu/` and `rq3_granularity/ram/` (one CSV per N × mode × repetition).
+
+**Before trusting RQ3 results**, run the work-equivalence pre-flight check — see "Work-Equivalence Check" below.
 
 ---
 
@@ -199,6 +203,43 @@ cat results/raw/rq2_mixed/parallel/*.csv
 
 Expected: 4 CSV files in each of `sequential/` and `parallel/`. Columns: `experiment_id,task_name,mode,combination,intensity,task_count,duration_s,energy_uj,energy_j,cpu_util_pct,mem_util_pct,run_id,timestamp`. `cpu_util_pct`/`mem_util_pct` are sampled directly from `/proc` during the run — a non-zero, plausible value there is independent evidence the workload actually loaded the system, separate from the RAPL energy reading itself.
 
+### RQ3 smoke test
+
+RQ3 has never been run at all — always smoke-test before a full run:
+
+```bash
+# Quick smoke test (2 subsystems x 4 N-values x 2 modes, 10 seconds, 1 rep)
+nextflow run workflows/main.nf \
+    --mode granularity \
+    --duration 10 \
+    --repetitions 1
+```
+
+Check results:
+
+```bash
+cat results/raw/rq3_granularity/cpu/*.csv
+cat results/raw/rq3_granularity/ram/*.csv
+```
+
+Expected: 8 CSV files in each of `cpu/` and `ram/` (N=1,2,4,8 × parallel/sequential). Columns: `experiment_id,task_name,mode,subsystem,intensity,task_count,duration_s,energy_uj,energy_j,run_id,timestamp` — the general schema, no `cpu_util_pct`/`mem_util_pct` (unlike RQ2). `intensity` should read `max` on every row; `task_count` should match N. For a given N, the `sequential` row's `duration_s` should be roughly N times the `parallel` row's `duration_s` (parallel runs all sub-tasks at once; sequential runs them back-to-back) — if they're roughly equal instead, something didn't launch the sub-tasks correctly.
+
+### Work-equivalence check
+
+Before trusting any real RQ3 data, confirm the N-way split is actually doing equivalent total work at every N (see `CLAUDE.md`, Key Scientific Constraints — "without this, RQ3 has no scientific validity"):
+
+```bash
+bash scripts/verify_work_equivalence.sh 30
+```
+
+(the argument is duration in seconds — 30s is a reasonable default for this check, shorter than the real 60s experiment runs). No root/RAPL access needed — it's a standalone check, independent of Nextflow. It prints a table per subsystem × mode; compare `total-bogo-ops` across N=1,2,4,8 within each table:
+
+- **CPU** should be roughly flat across N in both modes.
+- **RAM** should be roughly flat in `sequential`, but may decline with N in `parallel` — that decline, if present, is a real memory-bandwidth-contention effect (expected and reportable, not a bug).
+- Large unexplained drift on the CPU side, or in RAM's sequential row, means the work-equivalence premise is broken and RQ3 needs revisiting before collecting real data.
+
+This is the first time this script has been run against a real `stress-ng` install — if it prints `WARNING: could not parse bogo-ops...`, the raw output it dumps to stderr will show the actual line format `stress-ng --metrics-brief` produced on this machine, which the `extract_bogo_ops` awk pattern near the top of the script may need adjusting to match.
+
 ---
 
 ## Analysis
@@ -246,6 +287,8 @@ results/raw/            Raw CSV results (gitignored)
     sequential/
     parallel/
   rq3_granularity/
+    cpu/
+    ram/
   validation/            rapl_validation.csv
 figures/                 Generated plots (gitignored)
 CLAUDE.md                Full project documentation (local only, gitignored)
@@ -262,7 +305,8 @@ CLAUDE.md                Full project documentation (local only, gitignored)
 - If coefficient of variation (CV) > 3%, investigate noise sources before continuing.
 - RAPL readings should be validated against `turbostat` (see above) before being trusted for analysis.
 - **RQ2 is implemented but unverified** — always run the RQ2 smoke test before a full 60s/5-rep run.
-- **RQ3 is not yet implemented** — running it produces placeholder data, not real results.
+- **RQ3 is implemented but has never been run** — always run the RQ3 smoke test, then `verify_work_equivalence.sh`, before a full 60s/5-rep run.
+- The `nextflow.config` executor cap (see Implementation status above) is also untested on real hardware — the first smoke test you run exercises it too.
 
 ---
 
