@@ -226,19 +226,28 @@ Expected: 8 CSV files in each of `cpu/` and `ram/` (N=1,2,4,8 × parallel/sequen
 
 ### Work-equivalence check
 
-Before trusting any real RQ3 data, confirm the N-way split is actually doing equivalent total work at every N (see `CLAUDE.md`, Key Scientific Constraints — "without this, RQ3 has no scientific validity"):
+**Why this exists.** RQ1 doesn't need this — it's explicitly comparing *different* load levels (1 vs 8 threads), so there's no "equal work" claim to verify. RQ2 doesn't need it either — its per-subsystem commands are fixed, known intensities reused directly from RQ1's own baseline (`--cpu 8`, `--vm-bytes 8G`, ...), not derived from any new arithmetic. RQ3 is different: it *derives* each sub-task's resource share as `8/N` and assumes N of those add back up to the same total work as one full-size task. That's a formula, not a measurement, and formulas can silently fail to hold — more sub-tasks means more process-launch overhead, and for RAM specifically, N concurrent workers competing for shared memory bandwidth may not each achieve their nominal share. Without checking, an energy difference between N=1 and N=8 in the real results could be a genuine task-splitting effect, or just the sub-tasks quietly doing less total work than intended — indistinguishable without this check.
+
+**What it measures.** "Bogo-ops" is `stress-ng`'s own internal counter of completed work — roughly one pass through its compute loop per unit for the CPU stressor, one write-and-verify pass over the allocated block for the memory (`vm`) stressor. Not a calibrated unit (hence "bogo" — not standardized against anything external), but that's fine here since it's only ever compared against `stress-ng`'s own other runs. The script launches N real `stress-ng` workers per (subsystem, mode, N) combination — same shape as the real experiment — and sums their reported bogo-ops per N, so "did total work stay equal" becomes something directly measured instead of assumed.
+
+**RAM needs one more step than CPU does.** For the CPU stressor, one bogo-op is a fixed-size unit of work regardless of how many workers you split into, so summing raw bogo-ops (`total-bogo-ops`) is a valid comparison across N. For the `vm` stressor it isn't: one bogo-op is one pass over *that worker's own* `--vm-bytes` chunk, and that chunk shrinks as N grows (8/N GB per worker) — so a worker with a smaller chunk finishes proportionally more passes in the same time even if its real memory-touching rate never changed. Confirmed against real data from the first RQ3 run: RAM's sequential mode (zero possible contention, only one worker runs at a time) still showed raw bogo-ops exploding ~85x from N=1 to N=8 — proof the raw count was inflating for a reason that has nothing to do with real work. The script now also prints `total-GB-touched` (`bogo_ops × chunk_size_gb`) for RAM, which converts the count back into a unit that means the same amount of real work no matter how the total was split — that's the number to actually compare, not `total-bogo-ops*` (kept for reference only).
+
+**Does the counter itself add overhead?** No, and it wouldn't matter if it did. `stress-ng` tracks bogo-ops internally regardless of any flag — `--metrics-brief` only adds a one-time summary print *after* the timed run finishes, not during it. More importantly, this script is completely separate from the real pipeline: `granularity.nf`'s actual `SUBTASK_CMD` never passes `--metrics-brief`, so nothing this script does ever becomes a CSV row or feeds real results — it's a standalone, throwaway pre-flight check.
+
+**Why run the CPU check too, if RAM contention is the real concern?** Because it's the control. CPU is unlikely to show a meaningful effect, but "unlikely" is exactly the kind of assumption this script exists to not just trust. And if CPU comes back flat while RAM declines with N, that contrast is direct, same-methodology evidence that RAM's drop is a real bandwidth-contention effect — not an artifact of the check itself.
+
+Run it before trusting any real RQ3 data (see `CLAUDE.md`, Key Scientific Constraints — "without this, RQ3 has no scientific validity"):
 
 ```bash
 bash scripts/verify_work_equivalence.sh 30
 ```
 
-(the argument is duration in seconds — 30s is a reasonable default for this check, shorter than the real 60s experiment runs). No root/RAPL access needed — it's a standalone check, independent of Nextflow. It prints a table per subsystem × mode; compare `total-bogo-ops` across N=1,2,4,8 within each table:
+(the argument is duration in seconds — 30s is a reasonable default for this check, shorter than the real 60s experiment runs). No root/RAPL access needed — it's a standalone check, independent of Nextflow. It prints a table per subsystem × mode:
 
-- **CPU** should be roughly flat across N in both modes.
-- **RAM** should be roughly flat in `sequential`, but may decline with N in `parallel` — that decline, if present, is a real memory-bandwidth-contention effect (expected and reportable, not a bug).
-- Large unexplained drift on the CPU side, or in RAM's sequential row, means the work-equivalence premise is broken and RQ3 needs revisiting before collecting real data.
+- **CPU** — compare `total-bogo-ops` across N=1,2,4,8; should be roughly flat in both modes. Large unexplained drift means the work-equivalence premise is broken and RQ3 needs revisiting before collecting real data.
+- **RAM** — compare `total-GB-touched`, not `total-bogo-ops*` (see "RAM needs one more step" above for why). Don't expect it to be flat across N in either mode — more total workers doing more total work is normal. What actually matters is comparing **parallel against sequential at the same N**: sequential workers never run concurrently, so they never compete for memory bandwidth — its `total-GB-touched` at a given N is the "no contention" reference point. If parallel's number at that N falls noticeably short of sequential's, that gap is the real memory-bandwidth-contention effect worth reporting as a finding, not a bug.
 
-This is the first time this script has been run against a real `stress-ng` install — if it prints `WARNING: could not parse bogo-ops...`, the raw output it dumps to stderr will show the actual line format `stress-ng --metrics-brief` produced on this machine, which the `extract_bogo_ops` awk pattern near the top of the script may need adjusting to match.
+`extract_bogo_ops`'s parsing of `stress-ng --metrics-brief` output has already been confirmed working against a real install (first RQ3 test run, 2026-09-15/16) — if it ever prints `WARNING: could not parse bogo-ops...` on a different machine, the raw output dumped to stderr shows the actual line format, which the awk pattern near the top of the script may need adjusting to match.
 
 ---
 
