@@ -18,6 +18,23 @@
 # show real contention between sub-tasks that a sequential-only check would
 # miss entirely.
 #
+# RAM-specific correction (added 2026-09-19, after the first real RQ3 run
+# surfaced this): raw bogo-ops are NOT directly comparable across N for the
+# `vm` stressor, unlike `cpu`. One vm bogo-op is one pass over THIS worker's
+# own --vm-bytes chunk — and that chunk shrinks as N grows (8/N GB per
+# worker) — so a worker with a smaller chunk completes proportionally more
+# "laps" in the same time even if its real memory-touching rate (bytes/sec)
+# never changed. Summing raw bogo-ops across workers therefore inflates
+# automatically with N regardless of whether real total work changed at
+# all — confirmed against real data, where RAM's sequential-mode total
+# (zero possible contention, since only one worker runs at a time) still
+# exploded ~85x from N=1 to N=8. The fix: convert bogo-ops to GB actually
+# touched (bogo_ops * chunk_size_gb) before comparing — see `total_gb`
+# below. `total-bogo-ops` is kept in the RAM table for reference/debugging
+# only; it is not a valid equivalence check on its own. The `cpu` stressor
+# does not have this problem (one cpu bogo-op is a fixed-size unit of work
+# regardless of thread count), so its table and comparison are unchanged.
+#
 # This is a pre-flight check, not part of the CSV pipeline (RQ3's schema
 # has no additional columns, per CLAUDE.md). Run once manually before the
 # main sweep. No root/RAPL access required — deliberately independent of
@@ -51,7 +68,11 @@ run_subsystem() {
 
     for mode in sequential parallel; do
         echo "=== ${label} work equivalence — ${mode} (duration=${DURATION}s) ==="
-        printf "%-4s %-12s %-16s %-16s\n" "N" "units/task" "bogo-ops/task" "total-bogo-ops"
+        if [[ "$stressor" == "vm" ]]; then
+            printf "%-4s %-12s %-16s %-18s %-18s\n" "N" "units/task" "bogo-ops/task" "total-bogo-ops*" "total-GB-touched"
+        else
+            printf "%-4s %-12s %-16s %-16s\n" "N" "units/task" "bogo-ops/task" "total-bogo-ops"
+        fi
         for N in 1 2 4 8; do
             local units=$((total_units / N))
             local total_ops=0
@@ -90,7 +111,17 @@ run_subsystem() {
                 total_ops=$((total_ops + ops))
             done
 
-            printf "%-4s %-12s %-16s %-16s\n" "$N" "$units" "$((total_ops / N))" "$total_ops"
+            if [[ "$stressor" == "vm" ]]; then
+                # units is the same for every worker in this N-group (each
+                # gets total_units/N), so total_ops * units = sum of each
+                # worker's (ops * its own chunk size) — the GB actually
+                # touched, a unit that means the same amount of real work
+                # regardless of how the total was split. See header comment.
+                local total_gb=$((total_ops * units))
+                printf "%-4s %-12s %-16s %-18s %-18s\n" "$N" "$units" "$((total_ops / N))" "$total_ops" "$total_gb"
+            else
+                printf "%-4s %-12s %-16s %-16s\n" "$N" "$units" "$((total_ops / N))" "$total_ops"
+            fi
         done
         echo
     done
@@ -99,16 +130,27 @@ run_subsystem() {
 run_subsystem "cpu" "cpu" 8
 run_subsystem "ram" "vm" 8
 
-echo "Compare 'total-bogo-ops' across N within each table (same subsystem,"
-echo "same mode) - values should be roughly constant, allowing for stress-ng"
-echo "startup overhead and scheduling noise."
+echo "CPU: compare 'total-bogo-ops' across N - values should be roughly"
+echo "constant in both modes (concurrent thread count stays ~8 regardless of"
+echo "split, and one cpu bogo-op is a fixed-size unit of work no matter how"
+echo "many workers you split into, so the raw count is directly comparable)."
+echo "Large unexplained drift here would mean the work-equivalence premise"
+echo "itself is broken and RQ3 needs revisiting before trusting results."
 echo ""
-echo "Expected: CPU roughly flat in both modes (concurrent thread count"
-echo "stays ~8 regardless of split). RAM roughly flat in sequential but may"
-echo "decline with N in parallel - that decline, if present, IS the"
-echo "memory-bandwidth-contention effect Philipp asked to be reported as a"
-echo "finding, not a bug (CLAUDE.md: RAM non-comparability in RQ3)."
+echo "RAM: use 'total-GB-touched', NOT 'total-bogo-ops*'. One vm bogo-op is"
+echo "one pass over a worker's OWN --vm-bytes chunk, and that chunk shrinks"
+echo "as N grows - so raw bogo-ops inflate automatically with N even when"
+echo "real work hasn't changed at all (see header comment). The '*' column"
+echo "is kept only for reference/debugging."
 echo ""
-echo "Large unexplained drift on the CPU side, or in the RAM sequential row,"
-echo "would instead indicate the work-equivalence premise itself is broken"
-echo "and RQ3 needs revisiting before trusting results."
+echo "Don't expect total-GB-touched to be flat across N in either mode -"
+echo "more total workers doing more total work is normal and expected, in"
+echo "both sequential and parallel. What actually indicates contention is"
+echo "comparing PARALLEL against SEQUENTIAL at the SAME N: sequential"
+echo "workers never run at the same time, so they never compete for memory"
+echo "bandwidth - its total-GB-touched at a given N is the 'no contention'"
+echo "reference point for what N workers' combined output should look like."
+echo "If parallel's total-GB-touched at that N falls noticeably short of"
+echo "sequential's, that gap is the real memory-bandwidth-contention effect"
+echo "Philipp asked to be reported as a finding (CLAUDE.md: RAM"
+echo "non-comparability in RQ3) - not a bug in this script."
