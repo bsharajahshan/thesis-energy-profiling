@@ -253,22 +253,24 @@ bash scripts/verify_work_equivalence.sh 30
 
 ## Analysis
 
-After experiments, clean and analyze results:
+Point these straight at `results/raw` — they load and unify RQ1/RQ2/RQ3 automatically (`scripts/analysis/load_data.py` handles the different column schemas and the lack of header rows in the raw files), no per-file wrangling needed:
 
 ```bash
-# 1. Clean data (remove outliers, validate schema)
-python3 scripts/analysis/clean_data.py results/raw/rq1_baseline/cpu/cpu_baseline_*.csv results/clean_cpu.csv
+# 1. Clean data (loads everything under results/raw, validates, flags high-CV groups)
+python3 scripts/analysis/clean_data.py results/raw results/clean.csv
 
-# 2. Compute statistics
-python3 scripts/analysis/stats.py results/clean_cpu.csv
+# 2. Compute statistics (summary stats, RQ2 additivity check, RQ3 parallel-vs-sequential)
+python3 scripts/analysis/stats.py results/raw
 
 # 3. Generate plots
-python3 scripts/analysis/plot.py results/clean_cpu.csv figures/
+python3 scripts/analysis/plot.py results/raw figures/
 ```
 
-Plots are saved to `figures/rq1_load_curves.pdf`, `figures/rq2_energy_comparison.pdf`, etc.
+Plots are saved to `figures/rq1_load_curves.pdf`, `figures/rq2_energy_comparison.pdf`, `figures/rq2_runtime_comparison.pdf`, `figures/rq3_efficiency_curve.pdf`.
 
-Note: `clean_data.py`/`stats.py` currently assume the RQ1 schema (numeric `intensity`, `subsystem`/`task_name` grouping). RQ2's schema differs (`combination` instead of `subsystem`, `intensity` fixed at `"max"`) and isn't yet supported by these scripts — treat RQ2 analysis as a manual/ad-hoc step for now.
+Verified against real data (2026-09-20): `stats.py`'s RQ2 additivity numbers match the hand-computed subadditivity figures from the 2026-08-18 session exactly, and RQ3's CPU energy means match the hand-verified numbers from the first real RQ3 run. Two things worth knowing before reading `stats.py`'s output:
+- `intensity` is deliberately left as text (not coerced to numeric) — it's categorical for I/O (`"sequential"`/`"random"`) and fixed at `"max"` for RQ2/RQ3, so forcing it numeric would silently turn those rows into `NaN`.
+- The RQ3 `gap_j` column (parallel vs. sequential energy) only isolates pure per-task launch overhead at N=1 — for N>1 it's dominated by sequential mode simply running N times longer, not a clean "overhead" figure. See the `rq3_overhead()` docstring in `stats.py` for the full explanation.
 
 ---
 

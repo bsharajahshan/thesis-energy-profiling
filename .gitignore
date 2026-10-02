@@ -228,3 +228,8 @@ __marimo__/
 results/
 figures/
 BASELINE_TEST_REPORT.md
+
+# Thesis document (LaTeX template + write-up) - kept local, not pushed to the
+# code repo; contains personal details (name, birthdate) on the title page
+thesis/
+Latexvorlage.zip
