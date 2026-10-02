@@ -52,6 +52,8 @@ process SEQUENTIAL_MIXED {
 
     TOTAL_DURATION="0"
     TOTAL_ENERGY_UJ="0"
+    TOTAL_DRAM_ENERGY_UJ="0"
+    DRAM_AVAILABLE=1
     WEIGHTED_CPU="0"
     WEIGHTED_MEM="0"
 
@@ -64,11 +66,20 @@ process SEQUENTIAL_MIXED {
 
         D=\$(echo "\${RAPL_OUTPUT}" | grep "^DURATION_S=" | cut -d= -f2)
         E=\$(echo "\${RAPL_OUTPUT}" | grep "^ENERGY_UJ=" | cut -d= -f2)
+        DE=\$(echo "\${RAPL_OUTPUT}" | grep "^DRAM_ENERGY_UJ=" | cut -d= -f2)
         CU=\$(echo "\${RAPL_OUTPUT}" | grep "^CPU_UTIL_PCT=" | cut -d= -f2)
         MU=\$(echo "\${RAPL_OUTPUT}" | grep "^MEM_UTIL_PCT=" | cut -d= -f2)
 
         TOTAL_DURATION=\$(echo "\${TOTAL_DURATION} + \${D}" | bc)
         TOTAL_ENERGY_UJ=\$(echo "\${TOTAL_ENERGY_UJ} + \${E}" | bc)
+        # DRAM domain may be unavailable (empty DE) on a machine without it -
+        # once any sub-task reports empty, stop trying to sum (sum would be
+        # meaningless if even one constituent is missing a reading).
+        if [[ -z "\${DE}" ]]; then
+            DRAM_AVAILABLE=0
+        elif [[ \${DRAM_AVAILABLE} -eq 1 ]]; then
+            TOTAL_DRAM_ENERGY_UJ=\$(echo "\${TOTAL_DRAM_ENERGY_UJ} + \${DE}" | bc)
+        fi
         WEIGHTED_CPU=\$(echo "\${WEIGHTED_CPU} + (\${CU} * \${D})" | bc)
         WEIGHTED_MEM=\$(echo "\${WEIGHTED_MEM} + (\${MU} * \${D})" | bc)
     done
@@ -76,6 +87,13 @@ process SEQUENTIAL_MIXED {
     DURATION_S="\${TOTAL_DURATION}"
     ENERGY_UJ="\${TOTAL_ENERGY_UJ}"
     ENERGY_J=\$(echo "scale=6; \${TOTAL_ENERGY_UJ} / 1000000" | bc)
+    if [[ \${DRAM_AVAILABLE} -eq 1 ]]; then
+        DRAM_ENERGY_UJ="\${TOTAL_DRAM_ENERGY_UJ}"
+        DRAM_ENERGY_J=\$(echo "scale=6; \${TOTAL_DRAM_ENERGY_UJ} / 1000000" | bc)
+    else
+        DRAM_ENERGY_UJ=""
+        DRAM_ENERGY_J=""
+    fi
     # Duration-weighted average utilisation across the constituent runs
     if (( \$(echo "\${TOTAL_DURATION} > 0" | bc -l) )); then
         CPU_UTIL_PCT=\$(echo "scale=3; \${WEIGHTED_CPU} / \${TOTAL_DURATION}" | bc)
@@ -85,8 +103,8 @@ process SEQUENTIAL_MIXED {
         MEM_UTIL_PCT="0"
     fi
 
-    # Write CSV row: experiment_id,task_name,mode,combination,intensity,task_count,duration_s,energy_uj,energy_j,cpu_util_pct,mem_util_pct,run_id,timestamp
-    echo "\${EXPERIMENT_ID},\${TASK_NAME},\${MODE},\${COMBINATION},\${INTENSITY},\${TASK_COUNT},\${DURATION_S},\${ENERGY_UJ},\${ENERGY_J},\${CPU_UTIL_PCT},\${MEM_UTIL_PCT},\${RUN_ID},\${TIMESTAMP}" > rq2_sequential_${combo}_${rep_id}.csv
+    # Write CSV row: experiment_id,task_name,mode,combination,intensity,task_count,duration_s,energy_uj,energy_j,dram_energy_uj,dram_energy_j,cpu_util_pct,mem_util_pct,run_id,timestamp
+    echo "\${EXPERIMENT_ID},\${TASK_NAME},\${MODE},\${COMBINATION},\${INTENSITY},\${TASK_COUNT},\${DURATION_S},\${ENERGY_UJ},\${ENERGY_J},\${DRAM_ENERGY_UJ},\${DRAM_ENERGY_J},\${CPU_UTIL_PCT},\${MEM_UTIL_PCT},\${RUN_ID},\${TIMESTAMP}" > rq2_sequential_${combo}_${rep_id}.csv
     """
 }
 
@@ -133,11 +151,13 @@ process PARALLEL_MIXED {
     DURATION_S=\$(echo "\${RAPL_OUTPUT}" | grep "^DURATION_S=" | cut -d= -f2)
     ENERGY_UJ=\$(echo "\${RAPL_OUTPUT}" | grep "^ENERGY_UJ=" | cut -d= -f2)
     ENERGY_J=\$(echo "\${RAPL_OUTPUT}" | grep "^ENERGY_J=" | cut -d= -f2)
+    DRAM_ENERGY_UJ=\$(echo "\${RAPL_OUTPUT}" | grep "^DRAM_ENERGY_UJ=" | cut -d= -f2)
+    DRAM_ENERGY_J=\$(echo "\${RAPL_OUTPUT}" | grep "^DRAM_ENERGY_J=" | cut -d= -f2)
     CPU_UTIL_PCT=\$(echo "\${RAPL_OUTPUT}" | grep "^CPU_UTIL_PCT=" | cut -d= -f2)
     MEM_UTIL_PCT=\$(echo "\${RAPL_OUTPUT}" | grep "^MEM_UTIL_PCT=" | cut -d= -f2)
 
-    # Write CSV row: experiment_id,task_name,mode,combination,intensity,task_count,duration_s,energy_uj,energy_j,cpu_util_pct,mem_util_pct,run_id,timestamp
-    echo "\${EXPERIMENT_ID},\${TASK_NAME},\${MODE},\${COMBINATION},\${INTENSITY},\${TASK_COUNT},\${DURATION_S},\${ENERGY_UJ},\${ENERGY_J},\${CPU_UTIL_PCT},\${MEM_UTIL_PCT},\${RUN_ID},\${TIMESTAMP}" > rq2_parallel_${combo}_${rep_id}.csv
+    # Write CSV row: experiment_id,task_name,mode,combination,intensity,task_count,duration_s,energy_uj,energy_j,dram_energy_uj,dram_energy_j,cpu_util_pct,mem_util_pct,run_id,timestamp
+    echo "\${EXPERIMENT_ID},\${TASK_NAME},\${MODE},\${COMBINATION},\${INTENSITY},\${TASK_COUNT},\${DURATION_S},\${ENERGY_UJ},\${ENERGY_J},\${DRAM_ENERGY_UJ},\${DRAM_ENERGY_J},\${CPU_UTIL_PCT},\${MEM_UTIL_PCT},\${RUN_ID},\${TIMESTAMP}" > rq2_parallel_${combo}_${rep_id}.csv
     """
 }
 

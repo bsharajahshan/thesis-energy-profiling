@@ -24,9 +24,11 @@ def load_and_clean(results_dir: str = "results/raw", output_csv: Optional[str] =
 
     Steps:
     1. Load and unify RQ1/RQ2/RQ3 CSVs (load_data.load_all_results)
-    2. Convert numeric columns (duration_s, energy_uj, energy_j, task_count,
-       cpu_util_pct, mem_util_pct) - NOT intensity, which is intentionally
-       left as text since it's categorical for I/O and "max" for RQ2/RQ3
+    2. Convert numeric columns (duration_s, energy_uj, energy_j,
+       dram_energy_uj, dram_energy_j, task_count, cpu_util_pct, mem_util_pct)
+       - NOT intensity, which is intentionally left as text since it's
+       categorical for I/O and "max" for RQ2/RQ3. dram_energy_* coerces
+       empty strings (domain unavailable) to NaN, not 0.
     3. Drop rows with invalid/missing duration_s or energy_j
     4. Flag (not silently drop) high-CV configurations for investigation
     5. Optionally write the clean CSV
@@ -35,7 +37,8 @@ def load_and_clean(results_dir: str = "results/raw", output_csv: Optional[str] =
     if df.empty:
         return df
 
-    numeric_cols = ["duration_s", "energy_uj", "energy_j", "task_count", "cpu_util_pct", "mem_util_pct"]
+    numeric_cols = ["duration_s", "energy_uj", "energy_j", "dram_energy_uj", "dram_energy_j",
+                     "task_count", "cpu_util_pct", "mem_util_pct"]
     for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 

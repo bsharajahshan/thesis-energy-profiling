@@ -20,9 +20,9 @@
 //   explicit choice) — any resulting contention effect is a reportable
 //   finding, not something to engineer around. This may make RAM results
 //   non-comparable to CPU results; that must be discussed in the thesis.
-// - CSV schema: general schema as-is, no additional columns (unlike RQ2).
-//   intensity is fixed at "max", matching RQ1/RQ2's MAX-intensity
-//   convention.
+// - CSV schema: general schema plus dram_energy_uj/dram_energy_j (added
+//   2026-10-02 - see measure_rapl.sh header). intensity is fixed at "max",
+//   matching RQ1/RQ2's MAX-intensity convention.
 // - No per-process maxForks guard needed here: nextflow.config caps the
 //   local executor's whole resource pool at one task's worth, so Nextflow
 //   can never run this (or any other) process's task instances
@@ -59,16 +59,31 @@ process CPU_GRANULARITY {
         # N sub-tasks back-to-back, own RAPL windows, summed.
         TOTAL_DURATION="0"
         TOTAL_ENERGY_UJ="0"
+        TOTAL_DRAM_ENERGY_UJ="0"
+        DRAM_AVAILABLE=1
         for i in \$(seq 1 ${task_count}); do
             RAPL_OUTPUT=\$(bash ${projectDir}/../scripts/measure_rapl.sh "\${SUBTASK_CMD}" "cpu_granularity_seq_\${i}")
             D=\$(echo "\${RAPL_OUTPUT}" | grep "^DURATION_S=" | cut -d= -f2)
             E=\$(echo "\${RAPL_OUTPUT}" | grep "^ENERGY_UJ=" | cut -d= -f2)
+            DE=\$(echo "\${RAPL_OUTPUT}" | grep "^DRAM_ENERGY_UJ=" | cut -d= -f2)
             TOTAL_DURATION=\$(echo "\${TOTAL_DURATION} + \${D}" | bc)
             TOTAL_ENERGY_UJ=\$(echo "\${TOTAL_ENERGY_UJ} + \${E}" | bc)
+            if [[ -z "\${DE}" ]]; then
+                DRAM_AVAILABLE=0
+            elif [[ \${DRAM_AVAILABLE} -eq 1 ]]; then
+                TOTAL_DRAM_ENERGY_UJ=\$(echo "\${TOTAL_DRAM_ENERGY_UJ} + \${DE}" | bc)
+            fi
         done
         DURATION_S="\${TOTAL_DURATION}"
         ENERGY_UJ="\${TOTAL_ENERGY_UJ}"
         ENERGY_J=\$(echo "scale=6; \${TOTAL_ENERGY_UJ} / 1000000" | bc)
+        if [[ \${DRAM_AVAILABLE} -eq 1 ]]; then
+            DRAM_ENERGY_UJ="\${TOTAL_DRAM_ENERGY_UJ}"
+            DRAM_ENERGY_J=\$(echo "scale=6; \${TOTAL_DRAM_ENERGY_UJ} / 1000000" | bc)
+        else
+            DRAM_ENERGY_UJ=""
+            DRAM_ENERGY_J=""
+        fi
     else
         # Parallel: N sub-tasks launched together inside a subshell so the
         # bare `wait` only blocks on them, not on measure_rapl.sh's own
@@ -83,10 +98,12 @@ process CPU_GRANULARITY {
         DURATION_S=\$(echo "\${RAPL_OUTPUT}" | grep "^DURATION_S=" | cut -d= -f2)
         ENERGY_UJ=\$(echo "\${RAPL_OUTPUT}" | grep "^ENERGY_UJ=" | cut -d= -f2)
         ENERGY_J=\$(echo "\${RAPL_OUTPUT}" | grep "^ENERGY_J=" | cut -d= -f2)
+        DRAM_ENERGY_UJ=\$(echo "\${RAPL_OUTPUT}" | grep "^DRAM_ENERGY_UJ=" | cut -d= -f2)
+        DRAM_ENERGY_J=\$(echo "\${RAPL_OUTPUT}" | grep "^DRAM_ENERGY_J=" | cut -d= -f2)
     fi
 
-    # CSV row: experiment_id,task_name,mode,subsystem,intensity,task_count,duration_s,energy_uj,energy_j,run_id,timestamp
-    echo "\${EXPERIMENT_ID},\${TASK_NAME},\${MODE},\${SUBSYSTEM},\${INTENSITY},\${TASK_COUNT},\${DURATION_S},\${ENERGY_UJ},\${ENERGY_J},\${RUN_ID},\${TIMESTAMP}" > cpu_granularity_${exec_mode}_${task_count}_${rep_id}.csv
+    # CSV row: experiment_id,task_name,mode,subsystem,intensity,task_count,duration_s,energy_uj,energy_j,dram_energy_uj,dram_energy_j,run_id,timestamp
+    echo "\${EXPERIMENT_ID},\${TASK_NAME},\${MODE},\${SUBSYSTEM},\${INTENSITY},\${TASK_COUNT},\${DURATION_S},\${ENERGY_UJ},\${ENERGY_J},\${DRAM_ENERGY_UJ},\${DRAM_ENERGY_J},\${RUN_ID},\${TIMESTAMP}" > cpu_granularity_${exec_mode}_${task_count}_${rep_id}.csv
     """
 }
 
@@ -120,16 +137,31 @@ process RAM_GRANULARITY {
     if [[ "${exec_mode}" == "sequential" ]]; then
         TOTAL_DURATION="0"
         TOTAL_ENERGY_UJ="0"
+        TOTAL_DRAM_ENERGY_UJ="0"
+        DRAM_AVAILABLE=1
         for i in \$(seq 1 ${task_count}); do
             RAPL_OUTPUT=\$(bash ${projectDir}/../scripts/measure_rapl.sh "\${SUBTASK_CMD}" "ram_granularity_seq_\${i}")
             D=\$(echo "\${RAPL_OUTPUT}" | grep "^DURATION_S=" | cut -d= -f2)
             E=\$(echo "\${RAPL_OUTPUT}" | grep "^ENERGY_UJ=" | cut -d= -f2)
+            DE=\$(echo "\${RAPL_OUTPUT}" | grep "^DRAM_ENERGY_UJ=" | cut -d= -f2)
             TOTAL_DURATION=\$(echo "\${TOTAL_DURATION} + \${D}" | bc)
             TOTAL_ENERGY_UJ=\$(echo "\${TOTAL_ENERGY_UJ} + \${E}" | bc)
+            if [[ -z "\${DE}" ]]; then
+                DRAM_AVAILABLE=0
+            elif [[ \${DRAM_AVAILABLE} -eq 1 ]]; then
+                TOTAL_DRAM_ENERGY_UJ=\$(echo "\${TOTAL_DRAM_ENERGY_UJ} + \${DE}" | bc)
+            fi
         done
         DURATION_S="\${TOTAL_DURATION}"
         ENERGY_UJ="\${TOTAL_ENERGY_UJ}"
         ENERGY_J=\$(echo "scale=6; \${TOTAL_ENERGY_UJ} / 1000000" | bc)
+        if [[ \${DRAM_AVAILABLE} -eq 1 ]]; then
+            DRAM_ENERGY_UJ="\${TOTAL_DRAM_ENERGY_UJ}"
+            DRAM_ENERGY_J=\$(echo "scale=6; \${TOTAL_DRAM_ENERGY_UJ} / 1000000" | bc)
+        else
+            DRAM_ENERGY_UJ=""
+            DRAM_ENERGY_J=""
+        fi
     else
         PARALLEL_CMD="("
         for i in \$(seq 1 ${task_count}); do
@@ -141,9 +173,11 @@ process RAM_GRANULARITY {
         DURATION_S=\$(echo "\${RAPL_OUTPUT}" | grep "^DURATION_S=" | cut -d= -f2)
         ENERGY_UJ=\$(echo "\${RAPL_OUTPUT}" | grep "^ENERGY_UJ=" | cut -d= -f2)
         ENERGY_J=\$(echo "\${RAPL_OUTPUT}" | grep "^ENERGY_J=" | cut -d= -f2)
+        DRAM_ENERGY_UJ=\$(echo "\${RAPL_OUTPUT}" | grep "^DRAM_ENERGY_UJ=" | cut -d= -f2)
+        DRAM_ENERGY_J=\$(echo "\${RAPL_OUTPUT}" | grep "^DRAM_ENERGY_J=" | cut -d= -f2)
     fi
 
-    echo "\${EXPERIMENT_ID},\${TASK_NAME},\${MODE},\${SUBSYSTEM},\${INTENSITY},\${TASK_COUNT},\${DURATION_S},\${ENERGY_UJ},\${ENERGY_J},\${RUN_ID},\${TIMESTAMP}" > ram_granularity_${exec_mode}_${task_count}_${rep_id}.csv
+    echo "\${EXPERIMENT_ID},\${TASK_NAME},\${MODE},\${SUBSYSTEM},\${INTENSITY},\${TASK_COUNT},\${DURATION_S},\${ENERGY_UJ},\${ENERGY_J},\${DRAM_ENERGY_UJ},\${DRAM_ENERGY_J},\${RUN_ID},\${TIMESTAMP}" > ram_granularity_${exec_mode}_${task_count}_${rep_id}.csv
     """
 }
 

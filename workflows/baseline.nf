@@ -32,9 +32,11 @@ process CPU_BASELINE {
     DURATION_S=\$(echo "\${RAPL_OUTPUT}" | grep "^DURATION_S=" | cut -d= -f2)
     ENERGY_UJ=\$(echo "\${RAPL_OUTPUT}" | grep "^ENERGY_UJ=" | cut -d= -f2)
     ENERGY_J=\$(echo "\${RAPL_OUTPUT}" | grep "^ENERGY_J=" | cut -d= -f2)
+    DRAM_ENERGY_UJ=\$(echo "\${RAPL_OUTPUT}" | grep "^DRAM_ENERGY_UJ=" | cut -d= -f2)
+    DRAM_ENERGY_J=\$(echo "\${RAPL_OUTPUT}" | grep "^DRAM_ENERGY_J=" | cut -d= -f2)
 
-    # Write CSV row: experiment_id,task_name,mode,subsystem,intensity,task_count,duration_s,energy_uj,energy_j,run_id,timestamp
-    echo "\${EXPERIMENT_ID},\${TASK_NAME},\${MODE},\${SUBSYSTEM},\${INTENSITY},\${TASK_COUNT},\${DURATION_S},\${ENERGY_UJ},\${ENERGY_J},\${RUN_ID},\${TIMESTAMP}" > cpu_baseline_${threads}_${rep_id}.csv
+    # Write CSV row: experiment_id,task_name,mode,subsystem,intensity,task_count,duration_s,energy_uj,energy_j,dram_energy_uj,dram_energy_j,run_id,timestamp
+    echo "\${EXPERIMENT_ID},\${TASK_NAME},\${MODE},\${SUBSYSTEM},\${INTENSITY},\${TASK_COUNT},\${DURATION_S},\${ENERGY_UJ},\${ENERGY_J},\${DRAM_ENERGY_UJ},\${DRAM_ENERGY_J},\${RUN_ID},\${TIMESTAMP}" > cpu_baseline_${threads}_${rep_id}.csv
     """
 }
 
@@ -68,9 +70,11 @@ process MEM_BASELINE {
     DURATION_S=\$(echo "\${RAPL_OUTPUT}" | grep "^DURATION_S=" | cut -d= -f2)
     ENERGY_UJ=\$(echo "\${RAPL_OUTPUT}" | grep "^ENERGY_UJ=" | cut -d= -f2)
     ENERGY_J=\$(echo "\${RAPL_OUTPUT}" | grep "^ENERGY_J=" | cut -d= -f2)
+    DRAM_ENERGY_UJ=\$(echo "\${RAPL_OUTPUT}" | grep "^DRAM_ENERGY_UJ=" | cut -d= -f2)
+    DRAM_ENERGY_J=\$(echo "\${RAPL_OUTPUT}" | grep "^DRAM_ENERGY_J=" | cut -d= -f2)
 
-    # Write CSV row
-    echo "\${EXPERIMENT_ID},\${TASK_NAME},\${MODE},\${SUBSYSTEM},\${INTENSITY},\${TASK_COUNT},\${DURATION_S},\${ENERGY_UJ},\${ENERGY_J},\${RUN_ID},\${TIMESTAMP}" > mem_baseline_${intensity_gb}_${rep_id}.csv
+    # Write CSV row: experiment_id,task_name,mode,subsystem,intensity,task_count,duration_s,energy_uj,energy_j,dram_energy_uj,dram_energy_j,run_id,timestamp
+    echo "\${EXPERIMENT_ID},\${TASK_NAME},\${MODE},\${SUBSYSTEM},\${INTENSITY},\${TASK_COUNT},\${DURATION_S},\${ENERGY_UJ},\${ENERGY_J},\${DRAM_ENERGY_UJ},\${DRAM_ENERGY_J},\${RUN_ID},\${TIMESTAMP}" > mem_baseline_${intensity_gb}_${rep_id}.csv
     """
 }
 
@@ -109,9 +113,11 @@ process IO_BASELINE {
     DURATION_S=\$(echo "\${RAPL_OUTPUT}" | grep "^DURATION_S=" | cut -d= -f2)
     ENERGY_UJ=\$(echo "\${RAPL_OUTPUT}" | grep "^ENERGY_UJ=" | cut -d= -f2)
     ENERGY_J=\$(echo "\${RAPL_OUTPUT}" | grep "^ENERGY_J=" | cut -d= -f2)
+    DRAM_ENERGY_UJ=\$(echo "\${RAPL_OUTPUT}" | grep "^DRAM_ENERGY_UJ=" | cut -d= -f2)
+    DRAM_ENERGY_J=\$(echo "\${RAPL_OUTPUT}" | grep "^DRAM_ENERGY_J=" | cut -d= -f2)
 
-    # Write CSV row
-    echo "\${EXPERIMENT_ID},\${TASK_NAME},\${MODE},\${SUBSYSTEM},\${INTENSITY},\${TASK_COUNT},\${DURATION_S},\${ENERGY_UJ},\${ENERGY_J},\${RUN_ID},\${TIMESTAMP}" > io_baseline_${io_pattern}_${rep_id}.csv
+    # Write CSV row: experiment_id,task_name,mode,subsystem,intensity,task_count,duration_s,energy_uj,energy_j,dram_energy_uj,dram_energy_j,run_id,timestamp
+    echo "\${EXPERIMENT_ID},\${TASK_NAME},\${MODE},\${SUBSYSTEM},\${INTENSITY},\${TASK_COUNT},\${DURATION_S},\${ENERGY_UJ},\${ENERGY_J},\${DRAM_ENERGY_UJ},\${DRAM_ENERGY_J},\${RUN_ID},\${TIMESTAMP}" > io_baseline_${io_pattern}_${rep_id}.csv
     """
 }
 

@@ -4,11 +4,20 @@
 load_data.py - Load and unify raw RQ1/RQ2/RQ3 result CSVs
 
 The raw CSV files under results/raw/ have no header row (measure_rapl.sh's
-callers just echo comma-separated values), and RQ1/RQ3 share one 11-column
-schema while RQ2 has a different 13-column schema (combination instead of
+callers just echo comma-separated values), and RQ1/RQ3 share one 13-column
+schema while RQ2 has a different 15-column schema (combination instead of
 subsystem, plus cpu_util_pct/mem_util_pct). This module reads all of them
 into one unified DataFrame, with columns that don't apply to a given RQ left
 as NaN, plus an `rq` column derived from experiment_id's prefix.
+
+Schema note (2026-10-02): dram_energy_uj/dram_energy_j were added to
+measure_rapl.sh and all three workflow files, reading the RAPL dram
+sub-domain separately from the package domain (Philipp confirmed the memory
+controller's energy is counted in dram, not package - package alone can't
+answer "how much did RAM use"). This is a breaking schema change - CSVs
+collected before this change (11/13 columns, no dram fields) will NOT load
+correctly through these column lists. The dataset in results/raw/ as of
+2026-09-25 predates this change and needs re-collecting, not reprocessing.
 
 Column meaning notes:
 - `intensity` is intentionally left as a string/object column, not coerced
@@ -18,6 +27,10 @@ Column meaning notes:
   sequential-vs-random distinction. Callers that need it as a number (e.g.
   plotting CPU/memory load curves) should convert it themselves, scoped to
   just those subsystem's rows.
+- `dram_energy_uj`/`dram_energy_j` are empty strings (not "0") when the dram
+  RAPL sub-domain wasn't available for that run - distinct from a real zero
+  reading. Coerce with pd.to_numeric(errors="coerce") to turn those into NaN
+  rather than treating them as 0 J.
 """
 
 import re
@@ -28,12 +41,14 @@ import pandas as pd
 
 RQ1_RQ3_COLUMNS = [
     "experiment_id", "task_name", "mode", "subsystem", "intensity",
-    "task_count", "duration_s", "energy_uj", "energy_j", "run_id", "timestamp",
+    "task_count", "duration_s", "energy_uj", "energy_j",
+    "dram_energy_uj", "dram_energy_j", "run_id", "timestamp",
 ]
 
 RQ2_COLUMNS = [
     "experiment_id", "task_name", "mode", "combination", "intensity",
     "task_count", "duration_s", "energy_uj", "energy_j",
+    "dram_energy_uj", "dram_energy_j",
     "cpu_util_pct", "mem_util_pct", "run_id", "timestamp",
 ]
 
