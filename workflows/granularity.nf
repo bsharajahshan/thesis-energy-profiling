@@ -23,6 +23,16 @@
 // - CSV schema: general schema plus dram_energy_uj/dram_energy_j (added
 //   2026-10-02 - see measure_rapl.sh header). intensity is fixed at "max",
 //   matching RQ1/RQ2's MAX-intensity convention.
+// - Partial-load CPU variant (added 2026-10-15, Philipp's suggestion):
+//   stress-ng at 100% never stalls, so the second hardware thread on a core
+//   has nothing to fill in and hyperthreading cannot help; real workflow
+//   tasks rarely use 100% CPU. `--cpu_load 50` adds `--cpu-load 50` to every
+//   CPU sub-task (still 8 threads in total, so 8 x 50% = nominally the work
+//   of the 4 physical cores), writes to rq3_granularity/cpu_load50/ and sets
+//   intensity to "load50" so the analysis keeps it apart from the 100% runs.
+//   Typical run (CPU only, parallel only):
+//     nextflow run workflows/main.nf --mode granularity --cpu_load 50 \
+//         --rq3_subsystems cpu --rq3_modes parallel
 // - No per-process maxForks guard needed here: nextflow.config caps the
 //   local executor's whole resource pool at one task's worth, so Nextflow
 //   can never run this (or any other) process's task instances
@@ -33,7 +43,7 @@
 nextflow.enable.dsl = 2
 
 process CPU_GRANULARITY {
-    publishDir "${params.results_dir}/rq3_granularity/cpu", mode: 'copy', overwrite: true
+    publishDir "${params.results_dir}/rq3_granularity/${params.cpu_load.toInteger() < 100 ? 'cpu_load' + params.cpu_load : 'cpu'}", mode: 'copy', overwrite: true
 
     input:
     tuple val(task_count), val(exec_mode), val(rep_id)
@@ -47,13 +57,15 @@ process CPU_GRANULARITY {
     TASK_NAME="cpu_granularity"
     MODE="${exec_mode}"
     SUBSYSTEM="cpu"
-    INTENSITY="max"
+    INTENSITY="${params.cpu_load.toInteger() < 100 ? 'load' + params.cpu_load : 'max'}"
     TASK_COUNT="${task_count}"
     RUN_ID="${rep_id}"
     TIMESTAMP=\$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 
     THREADS_PER_TASK=\$((8 / ${task_count}))
-    SUBTASK_CMD="stress-ng --cpu \${THREADS_PER_TASK} --timeout ${params.duration}s"
+    # Empty at the default cpu_load=100, so the main experiment's command is unchanged.
+    CPU_LOAD_ARG="${params.cpu_load.toInteger() < 100 ? '--cpu-load ' + params.cpu_load : ''}"
+    SUBTASK_CMD="stress-ng --cpu \${THREADS_PER_TASK} \${CPU_LOAD_ARG} --timeout ${params.duration}s"
 
     if [[ "${exec_mode}" == "sequential" ]]; then
         # N sub-tasks back-to-back, own RAPL windows, summed.
@@ -182,13 +194,36 @@ process RAM_GRANULARITY {
 }
 
 workflow granularity_workflow {
+    def cpu_load   = params.cpu_load.toInteger()
+    def subsystems = params.rq3_subsystems.toString().tokenize(',')*.trim()
+    def modes      = params.rq3_modes.toString().tokenize(',')*.trim()
+
+    if (cpu_load < 1 || cpu_load > 100) {
+        error("cpu_load must be between 1 and 100, got ${cpu_load}")
+    }
+    if (!subsystems || !(subsystems - ['cpu', 'ram']).isEmpty()) {
+        error("rq3_subsystems must be a comma list of cpu/ram, got '${params.rq3_subsystems}'")
+    }
+    if (!modes || !(modes - ['parallel', 'sequential']).isEmpty()) {
+        error("rq3_modes must be a comma list of parallel/sequential, got '${params.rq3_modes}'")
+    }
+    // cpu_load only changes the CPU sweep. Running RAM alongside it would
+    // re-run the main RAM experiment and overwrite rq3_granularity/ram/.
+    if (cpu_load < 100 && subsystems.contains('ram')) {
+        error("cpu_load=${cpu_load} only applies to the CPU sweep - add --rq3_subsystems cpu")
+    }
+
     // Task count sweep: 1, 2, 4, 8 sub-tasks, each mode, each repetition.
     task_counts = Channel.of(1, 2, 4, 8)
-    exec_modes  = Channel.of("parallel", "sequential")
+    exec_modes  = Channel.fromList(modes)
     rep_ids     = Channel.of(1..params.repetitions.toInteger())
 
     combos = task_counts.combine(exec_modes).combine(rep_ids)
 
-    CPU_GRANULARITY(combos)
-    RAM_GRANULARITY(combos)
+    if (subsystems.contains('cpu')) {
+        CPU_GRANULARITY(combos)
+    }
+    if (subsystems.contains('ram')) {
+        RAM_GRANULARITY(combos)
+    }
 }

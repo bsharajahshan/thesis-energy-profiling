@@ -27,10 +27,15 @@ def compute_summary_stats(df: pd.DataFrame, groupby_cols: list) -> pd.DataFrame:
     grouped = df.groupby(groupby_cols, dropna=False).agg({
         "energy_j": ["mean", "std", "count"],
         "duration_s": "mean",
+        "dram_energy_j": ["mean", "std"],
     })
-    grouped.columns = ["energy_mean_j", "energy_std_j", "count", "duration_mean_s"]
+    grouped.columns = ["energy_mean_j", "energy_std_j", "count", "duration_mean_s",
+                       "dram_mean_j", "dram_std_j"]
     grouped["energy_cv"] = grouped["energy_std_j"] / grouped["energy_mean_j"]
     grouped["power_w"] = grouped["energy_mean_j"] / grouped["duration_mean_s"]
+    # RAPL's package domain does not include the DRAM domain, so the two add up.
+    grouped["dram_power_w"] = grouped["dram_mean_j"] / grouped["duration_mean_s"]
+    grouped["total_mean_j"] = grouped["energy_mean_j"] + grouped["dram_mean_j"]
 
     return grouped
 
@@ -127,6 +132,7 @@ def rq2_additivity(df: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for combo, subsystems in combo_subsystems.items():
         isolated_sum = 0.0
+        isolated_dram_sum = 0.0
         missing = []
         for s in subsystems:
             baseline = rq1[(rq1["subsystem"] == s) & (rq1["intensity"].astype(str) == max_intensity[s])]
@@ -134,11 +140,13 @@ def rq2_additivity(df: pd.DataFrame) -> pd.DataFrame:
                 missing.append(s)
                 continue
             isolated_sum += baseline["energy_j"].mean()
+            isolated_dram_sum += baseline["dram_energy_j"].mean()
 
         combined = rq2_parallel[rq2_parallel["combination"] == combo]
 
         row = {"combination": combo, "isolated_sum_j": None, "combined_mean_j": None,
-               "delta_pct": None, "note": ""}
+               "delta_pct": None, "dram_isolated_sum_j": None, "dram_combined_mean_j": None,
+               "dram_delta_pct": None, "note": ""}
         if missing:
             row["note"] = f"missing RQ1 baseline for: {missing}"
         elif combined.empty:
@@ -149,6 +157,11 @@ def rq2_additivity(df: pd.DataFrame) -> pd.DataFrame:
             row["isolated_sum_j"] = isolated_sum
             row["combined_mean_j"] = combined_mean
             row["delta_pct"] = (combined_mean - isolated_sum) / isolated_sum * 100
+            dram_combined = combined["dram_energy_j"].mean()
+            if pd.notna(dram_combined) and isolated_dram_sum > 0:
+                row["dram_isolated_sum_j"] = isolated_dram_sum
+                row["dram_combined_mean_j"] = dram_combined
+                row["dram_delta_pct"] = (dram_combined - isolated_dram_sum) / isolated_dram_sum * 100
         rows.append(row)
 
     return pd.DataFrame(rows)
@@ -173,20 +186,25 @@ def rq3_overhead(df: pd.DataFrame) -> pd.DataFrame:
     """
     rq3 = df[df["rq"] == "rq3"]
     rows = []
-    for subsystem in sorted(rq3["subsystem"].dropna().unique()):
-        for n in sorted(rq3["task_count"].dropna().unique()):
-            par = rq3[(rq3["subsystem"] == subsystem) & (rq3["task_count"] == n) & (rq3["mode"] == "parallel")]
-            seq = rq3[(rq3["subsystem"] == subsystem) & (rq3["task_count"] == n) & (rq3["mode"] == "sequential")]
+    # intensity separates the main 100% runs ("max") from partial-load CPU
+    # variants ("load50", ...) - they must never be pooled.
+    for (subsystem, intensity), sub in rq3.groupby(["subsystem", "intensity"]):
+        for n in sorted(sub["task_count"].dropna().unique()):
+            par = sub[(sub["task_count"] == n) & (sub["mode"] == "parallel")]
+            seq = sub[(sub["task_count"] == n) & (sub["mode"] == "sequential")]
             if par.empty or seq.empty:
                 continue
             par_mean = par["energy_j"].mean()
             seq_mean = seq["energy_j"].mean()
             rows.append({
                 "subsystem": subsystem,
+                "intensity": intensity,
                 "task_count": int(n),
                 "parallel_mean_j": par_mean,
                 "sequential_mean_j": seq_mean,
                 "gap_j": par_mean - seq_mean,
+                "parallel_dram_j": par["dram_energy_j"].mean(),
+                "sequential_dram_j": seq["dram_energy_j"].mean(),
                 "gap_is_pure_launch_overhead": bool(n == 1),
                 "parallel_duration_s": par["duration_s"].mean(),
                 "sequential_duration_s": seq["duration_s"].mean(),
@@ -216,10 +234,10 @@ if __name__ == "__main__":
     additivity = rq2_additivity(df)
     print(additivity.to_string(index=False))
 
-    print("\n=== RQ3: summary stats per subsystem x mode x task_count ===")
+    print("\n=== RQ3: summary stats per subsystem x intensity (load level) x mode x task_count ===")
     rq3 = df[df["rq"] == "rq3"]
     if not rq3.empty:
-        print(compute_summary_stats(rq3, ["subsystem", "mode", "task_count"]))
+        print(compute_summary_stats(rq3, ["subsystem", "intensity", "mode", "task_count"]))
 
     print("\n=== RQ3: parallel vs sequential energy per subsystem x N ===")
     print("(gap_j only isolates pure launch overhead where gap_is_pure_launch_overhead is True, i.e. N=1 - see rq3_overhead docstring)")

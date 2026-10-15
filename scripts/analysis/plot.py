@@ -17,6 +17,10 @@ Generates plots for thesis:
                                 visualized at all.
 - rq3_efficiency_curve.pdf   — energy vs task count N (parallel mode), per subsystem
 
+DRAM (RAPL intel-rapl:0:2) is a separate domain that the package reading does
+not include. Plots therefore show package energy and DRAM energy side by side
+(top/bottom rows or stacked bars), never mixed into one number without labeling.
+
 No titles on any plot (captions go in the thesis text, per CLAUDE.md); axis
 labels and error bars (+-1 stddev) throughout.
 """
@@ -46,13 +50,20 @@ def setup_plot_style():
     plt.rcParams["axes.spines.right"] = False
 
 
+def start_y_at_zero(fig):
+    """Supervisor requirement: every y-axis starts at 0 (keeps the upper limit matplotlib chose)."""
+    for ax in fig.axes:
+        ax.set_ylim(bottom=0)
+
+
 def plot_rq1_load_curves(df: pd.DataFrame, output_dir: str = "figures"):
     """
-    RQ1: energy vs load level, one panel per subsystem - CPU/memory have a
-    numeric intensity (thread count / GB) and get a line+errorbar curve; I/O's
-    intensity is categorical ("sequential"/"random") and gets a bar chart.
-    They can't share one x-axis (different units entirely), so this is three
-    small multiples in one figure rather than one shared plot.
+    RQ1: energy vs load level, one column per subsystem. Top row: package
+    energy. Bottom row: DRAM-only energy (separate RAPL domain). CPU/memory
+    have a numeric intensity (thread count / GB) and get a line+errorbar
+    curve; I/O's intensity is categorical ("sequential"/"random") and gets a
+    bar chart. They can't share one x-axis (different units entirely), so
+    this is small multiples rather than one shared plot.
     """
     setup_plot_style()
     rq1 = df[df["rq"] == "rq1"]
@@ -60,37 +71,41 @@ def plot_rq1_load_curves(df: pd.DataFrame, output_dir: str = "figures"):
         print("No RQ1 data - skipping rq1_load_curves.pdf")
         return
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    fig, axes = plt.subplots(2, 3, figsize=(15, 9))
+    rows = [("energy_j", "Package energy (J)"), ("dram_energy_j", "DRAM energy (J)")]
 
-    numeric_subsystems = [("cpu", "CPU threads", axes[0]), ("memory", "Memory (GB)", axes[1])]
-    for subsystem, xlabel, ax in numeric_subsystems:
-        subset = rq1[rq1["subsystem"] == subsystem].copy()
-        if subset.empty:
-            continue
-        subset["intensity_num"] = pd.to_numeric(subset["intensity"], errors="coerce")
-        grouped = subset.groupby("intensity_num").agg(
-            energy_mean=("energy_j", "mean"), energy_std=("energy_j", "std")
-        ).reset_index().sort_values("intensity_num")
-        ax.errorbar(grouped["intensity_num"], grouped["energy_mean"], yerr=grouped["energy_std"],
-                    marker="o", capsize=4)
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel("Energy (J)")
-        ax.grid(True, alpha=0.3, axis="y")
+    for r, (col, ylabel) in enumerate(rows):
+        for c, (subsystem, xlabel) in enumerate([("cpu", "CPU threads"), ("memory", "Memory (GB)")]):
+            ax = axes[r][c]
+            subset = rq1[rq1["subsystem"] == subsystem].copy()
+            if subset.empty:
+                continue
+            subset["intensity_num"] = pd.to_numeric(subset["intensity"], errors="coerce")
+            grouped = subset.groupby("intensity_num").agg(
+                energy_mean=(col, "mean"), energy_std=(col, "std")
+            ).reset_index().sort_values("intensity_num")
+            ax.errorbar(grouped["intensity_num"], grouped["energy_mean"], yerr=grouped["energy_std"],
+                        marker="o", capsize=4)
+            ax.set_xticks(grouped["intensity_num"])
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel(ylabel)
+            ax.grid(True, alpha=0.3, axis="y")
 
-    io_ax = axes[2]
-    io_subset = rq1[rq1["subsystem"] == "io"]
-    if not io_subset.empty:
-        grouped = io_subset.groupby("intensity").agg(
-            energy_mean=("energy_j", "mean"), energy_std=("energy_j", "std")
-        ).reset_index()
-        x = np.arange(len(grouped))
-        io_ax.bar(x, grouped["energy_mean"], yerr=grouped["energy_std"], capsize=4, width=0.5)
-        io_ax.set_xticks(x)
-        io_ax.set_xticklabels(grouped["intensity"])
-        io_ax.set_xlabel("I/O pattern")
-        io_ax.set_ylabel("Energy (J)")
-        io_ax.grid(True, alpha=0.3, axis="y")
+        ax = axes[r][2]
+        io_subset = rq1[rq1["subsystem"] == "io"]
+        if not io_subset.empty:
+            grouped = io_subset.groupby("intensity").agg(
+                energy_mean=(col, "mean"), energy_std=(col, "std")
+            ).reset_index()
+            x = np.arange(len(grouped))
+            ax.bar(x, grouped["energy_mean"], yerr=grouped["energy_std"], capsize=4, width=0.5)
+            ax.set_xticks(x)
+            ax.set_xticklabels(grouped["intensity"])
+            ax.set_xlabel("I/O pattern")
+            ax.set_ylabel(ylabel)
+            ax.grid(True, alpha=0.3, axis="y")
 
+    start_y_at_zero(fig)
     plt.tight_layout()
     output_path = Path(output_dir) / "rq1_load_curves.pdf"
     output_path.parent.mkdir(exist_ok=True)
@@ -99,8 +114,14 @@ def plot_rq1_load_curves(df: pd.DataFrame, output_dir: str = "figures"):
     plt.close()
 
 
-def _rq2_grouped_bar(df: pd.DataFrame, value_col: str, ylabel: str, output_name: str, output_dir: str, color=None):
-    """Shared implementation for RQ2's energy/runtime comparison plots."""
+def _rq2_grouped_bar(df: pd.DataFrame, value_col: str, ylabel: str, output_name: str, output_dir: str,
+                      color=None, dram_col: str = None):
+    """
+    Shared implementation for RQ2's energy/runtime comparison plots. With
+    dram_col set, each bar is stacked: package energy at the bottom, DRAM
+    energy (separate RAPL domain, added on top) above it. The error bar is
+    +-1 stddev of the package value only.
+    """
     setup_plot_style()
     rq2 = df[df["rq"] == "rq2"]
     if rq2.empty:
@@ -113,15 +134,22 @@ def _rq2_grouped_bar(df: pd.DataFrame, value_col: str, ylabel: str, output_name:
     x = np.arange(len(combos))
 
     fig, ax = plt.subplots(figsize=(10, 6))
+    base_colors = color or ["#eb6834", "#2a78d6"]
     for i, mode in enumerate(modes):
-        means, stds = [], []
+        means, stds, drams = [], [], []
         for combo in combos:
-            subset = rq2[(rq2["combination"] == combo) & (rq2["mode"] == mode)][value_col]
+            sel = rq2[(rq2["combination"] == combo) & (rq2["mode"] == mode)]
+            subset = sel[value_col]
             means.append(subset.mean() if not subset.empty else 0)
             stds.append(subset.std() if len(subset) > 1 else 0)
+            if dram_col:
+                drams.append(sel[dram_col].mean() if not sel.empty else 0)
         offset = (i - 0.5) * width
-        ax.bar(x + offset, means, width, yerr=stds, capsize=4, label=mode,
-               color=color[i] if color else None)
+        label = f"{mode} (package)" if dram_col else mode
+        ax.bar(x + offset, means, width, yerr=stds, capsize=4, label=label, color=base_colors[i])
+        if dram_col:
+            ax.bar(x + offset, drams, width, bottom=means, label=f"{mode} (DRAM)",
+                   color=base_colors[i], alpha=0.45, hatch="//", edgecolor="white")
 
     ax.set_xlabel("Combination")
     ax.set_ylabel(ylabel)
@@ -130,6 +158,7 @@ def _rq2_grouped_bar(df: pd.DataFrame, value_col: str, ylabel: str, output_name:
     ax.legend()
     ax.grid(True, alpha=0.3, axis="y")
 
+    start_y_at_zero(fig)
     plt.tight_layout()
     output_path = Path(output_dir) / output_name
     output_path.parent.mkdir(exist_ok=True)
@@ -139,8 +168,9 @@ def _rq2_grouped_bar(df: pd.DataFrame, value_col: str, ylabel: str, output_name:
 
 
 def plot_rq2_energy_comparison(df: pd.DataFrame, output_dir: str = "figures"):
-    """RQ2: energy per combination, sequential vs parallel bars."""
-    _rq2_grouped_bar(df, "energy_j", "Energy (J)", "rq2_energy_comparison.pdf", output_dir)
+    """RQ2: energy per combination, sequential vs parallel, stacked package + DRAM."""
+    _rq2_grouped_bar(df, "energy_j", "Energy (J)", "rq2_energy_comparison.pdf", output_dir,
+                      dram_col="dram_energy_j")
 
 
 def plot_rq2_runtime_comparison(df: pd.DataFrame, output_dir: str = "figures"):
@@ -152,11 +182,16 @@ def plot_rq2_runtime_comparison(df: pd.DataFrame, output_dir: str = "figures"):
 def plot_rq2_additivity(df: pd.DataFrame, output_dir: str = "figures"):
     """
     RQ2's actual finding: combined (parallel) energy vs. the sum of the
-    matching isolated RQ1 baselines, per combination. "Isolated sum" is a
-    derived value (sum of two/three baseline means), not a raw measured
-    distribution, so it gets no error bar; "combined" is a real 5-rep mean
-    and keeps its error bar. Delta % is labeled above each pair since that's
-    the actual story, not just the two bar heights.
+    matching isolated RQ1 baselines, per combination. Left panel: package
+    energy. Right panel: DRAM-only energy. "Isolated sum" is a derived value
+    (sum of two/three baseline means), not a raw measured distribution, so it
+    gets no error bar; "combined" is a real 5-rep mean and keeps its error
+    bar. Delta % is labeled above each pair since that's the actual story,
+    not just the two bar heights.
+
+    Caveat for the thesis text: every isolated run contains the machine's
+    baseline draw, so the isolated sum counts it 2-3 times and the combined
+    run once. No idle measurement exists to subtract it.
     """
     setup_plot_style()
     additivity = rq2_additivity(df)
@@ -166,32 +201,35 @@ def plot_rq2_additivity(df: pd.DataFrame, output_dir: str = "figures"):
         return
 
     rq2 = df[(df["rq"] == "rq2") & (df["mode"] == "parallel")]
-    combined_std = {
-        combo: rq2[rq2["combination"] == combo]["energy_j"].std()
-        for combo in additivity["combination"]
-    }
+    panels = [
+        ("Package energy (J)", "isolated_sum_j", "combined_mean_j", "delta_pct", "energy_j"),
+        ("DRAM energy (J)", "dram_isolated_sum_j", "dram_combined_mean_j", "dram_delta_pct", "dram_energy_j"),
+    ]
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6))
 
-    x = np.arange(len(additivity))
     width = 0.35
-    fig, ax = plt.subplots(figsize=(10, 6))
+    for ax, (ylabel, iso_col, comb_col, delta_col, raw_col) in zip(axes, panels):
+        panel = additivity.dropna(subset=[iso_col, comb_col]).reset_index(drop=True)
+        if panel.empty:
+            ax.set_visible(False)
+            continue
+        px = np.arange(len(panel))
+        combined_std = [rq2[rq2["combination"] == c][raw_col].std() for c in panel["combination"]]
+        ax.bar(px - width / 2, panel[iso_col], width, label="Sum of isolated baselines", color="#c3c2b7")
+        ax.bar(px + width / 2, panel[comb_col], width, label="Combined (parallel)",
+               yerr=combined_std, capsize=4, color="#2a78d6")
+        for i, row in panel.iterrows():
+            top = max(row[iso_col], row[comb_col])
+            ax.text(i, top + top * 0.03, f"{row[delta_col]:+.0f}%", ha="center", fontsize=10)
+        ax.set_xlabel("Combination")
+        ax.set_ylabel(ylabel)
+        ax.set_xticks(px)
+        ax.set_xticklabels(panel["combination"])
+        ax.legend()
+        ax.grid(True, alpha=0.3, axis="y")
+        ax.margins(y=0.12)
 
-    ax.bar(x - width / 2, additivity["isolated_sum_j"], width, label="Sum of isolated baselines",
-           color="#c3c2b7")
-    ax.bar(x + width / 2, additivity["combined_mean_j"], width, label="Combined (parallel)",
-           yerr=[combined_std[c] for c in additivity["combination"]], capsize=4, color="#2a78d6")
-
-    for i, row in additivity.reset_index(drop=True).iterrows():
-        top = max(row["isolated_sum_j"], row["combined_mean_j"])
-        ax.text(i, top + top * 0.03, f"{row['delta_pct']:+.0f}%", ha="center", fontsize=10)
-
-    ax.set_xlabel("Combination")
-    ax.set_ylabel("Energy (J)")
-    ax.set_xticks(x)
-    ax.set_xticklabels(additivity["combination"])
-    ax.legend()
-    ax.grid(True, alpha=0.3, axis="y")
-    ax.margins(y=0.12)
-
+    start_y_at_zero(fig)
     plt.tight_layout()
     output_path = Path(output_dir) / "rq2_additivity.pdf"
     output_path.parent.mkdir(exist_ok=True)
@@ -203,9 +241,10 @@ def plot_rq2_additivity(df: pd.DataFrame, output_dir: str = "figures"):
 def plot_rq3_efficiency_curve(df: pd.DataFrame, output_dir: str = "figures"):
     """
     RQ3: energy vs task count N, parallel mode only (the main experiment),
-    one panel per subsystem - CPU and RAM aren't directly comparable (RAM
+    one column per subsystem - CPU and RAM aren't directly comparable (RAM
     is deliberately not bandwidth-capped, see CLAUDE.md), so they get
-    separate panels rather than being overlaid on one axis.
+    separate panels rather than being overlaid on one axis. Top row: package
+    energy. Bottom row: DRAM-only energy.
     """
     setup_plot_style()
     rq3 = df[(df["rq"] == "rq3") & (df["mode"] == "parallel")]
@@ -214,22 +253,31 @@ def plot_rq3_efficiency_curve(df: pd.DataFrame, output_dir: str = "figures"):
         return
 
     subsystems = [s for s in ["cpu", "ram"] if s in rq3["subsystem"].unique()]
-    fig, axes = plt.subplots(1, len(subsystems), figsize=(6 * len(subsystems), 5), squeeze=False)
-    axes = axes[0]
+    fig, axes = plt.subplots(2, len(subsystems), figsize=(6 * len(subsystems), 9), squeeze=False)
+    rows = [("energy_j", "Package energy (J)"), ("dram_energy_j", "DRAM energy (J)")]
 
-    for ax, subsystem in zip(axes, subsystems):
-        subset = rq3[rq3["subsystem"] == subsystem]
-        grouped = subset.groupby("task_count").agg(
-            energy_mean=("energy_j", "mean"), energy_std=("energy_j", "std")
-        ).reset_index().sort_values("task_count")
+    for r, (col, ylabel) in enumerate(rows):
+        for c, subsystem in enumerate(subsystems):
+            ax = axes[r][c]
+            subset = rq3[rq3["subsystem"] == subsystem]
+            # One line per load level: "max" = the main 100% runs, "loadNN" =
+            # partial-load CPU variant (--cpu_load NN). Never pooled.
+            intensities = sorted(subset["intensity"].astype(str).unique(), key=lambda i: i != "max")
+            for intensity in intensities:
+                grouped = subset[subset["intensity"].astype(str) == intensity].groupby("task_count").agg(
+                    energy_mean=(col, "mean"), energy_std=(col, "std")
+                ).reset_index().sort_values("task_count")
+                label = "100% load" if intensity == "max" else f"{intensity.removeprefix('load')}% load"
+                ax.errorbar(grouped["task_count"], grouped["energy_mean"], yerr=grouped["energy_std"],
+                             marker="s", markersize=8, capsize=4, label=label)
+                ax.set_xticks(grouped["task_count"])
+            if len(intensities) > 1:
+                ax.legend()
+            ax.set_xlabel(f"Task count N ({subsystem.upper()})")
+            ax.set_ylabel(ylabel)
+            ax.grid(True, alpha=0.3)
 
-        ax.errorbar(grouped["task_count"], grouped["energy_mean"], yerr=grouped["energy_std"],
-                     marker="s", markersize=8, capsize=4)
-        ax.set_xlabel(f"Task count N ({subsystem.upper()})")
-        ax.set_ylabel("Energy (J)")
-        ax.set_xticks(grouped["task_count"])
-        ax.grid(True, alpha=0.3)
-
+    start_y_at_zero(fig)
     plt.tight_layout()
     output_path = Path(output_dir) / "rq3_efficiency_curve.pdf"
     output_path.parent.mkdir(exist_ok=True)

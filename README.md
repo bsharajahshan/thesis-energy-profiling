@@ -151,6 +151,22 @@ This runs 2 subsystems × 4 N-values × 2 modes × repetitions = 80 runs by defa
 
 **Before trusting RQ3 results**, run the work-equivalence pre-flight check — see "Work-Equivalence Check" below.
 
+#### Partial-load CPU variant (50%)
+
+The main CPU sweep runs every stress-ng thread at 100%, which never stalls, so the second hardware thread on a core has nothing to fill in (no hyperthreading benefit). Real workflow tasks rarely use 100% CPU, so this variant runs every CPU thread at 50% (`stress-ng --cpu-load 50`), still 8 threads in total — nominally the work of the 4 physical cores. CPU only, parallel only (about 20 minutes at 60 s × 5 reps):
+
+```bash
+nextflow run workflows/main.nf \
+    --mode granularity \
+    --cpu_load 50 \
+    --rq3_subsystems cpu \
+    --rq3_modes parallel \
+    --duration 60 \
+    --repetitions 5
+```
+
+Output lands in `results/raw/rq3_granularity/cpu_load50/` with intensity `load50`, so the analysis keeps it apart from the 100% runs (`intensity = max`). The workflow refuses `--cpu_load` below 100 together with the RAM sweep, because that would re-run and overwrite the main RAM data. Check work equivalence for it with `CPU_LOAD=50 SUBSYSTEMS=cpu bash scripts/verify_work_equivalence.sh 30`.
+
 ---
 
 ## Testing Before Full Experiments
@@ -248,6 +264,25 @@ bash scripts/verify_work_equivalence.sh 30
 - **RAM** — compare `total-GB-touched`, not `total-bogo-ops*` (see "RAM needs one more step" above for why). Don't expect it to be flat across N in either mode — more total workers doing more total work is normal. What actually matters is comparing **parallel against sequential at the same N**: sequential workers never run concurrently, so they never compete for memory bandwidth — its `total-GB-touched` at a given N is the "no contention" reference point. If parallel's number at that N falls noticeably short of sequential's, that gap is the real memory-bandwidth-contention effect worth reporting as a finding, not a bug.
 
 `extract_bogo_ops`'s parsing of `stress-ng --metrics-brief` output has already been confirmed working against a real install (first RQ3 test run, 2026-09-15/16) — if it ever prints `WARNING: could not parse bogo-ops...` on a different machine, the raw output dumped to stderr shows the actual line format, which the awk pattern near the top of the script may need adjusting to match.
+
+### Diagnostic side-run: what work is actually done
+
+`scripts/diagnose_work.sh` re-runs a few selected cases through the same `measure_rapl.sh` wrapper and additionally logs what the workers did: operations and CPU share per worker (stress-ng `--metrics-brief`, fio JSON), DRAM traffic in MiB read/written (perf `uncore_imc` counters, if the machine has them), and CPU frequency/temperature (turbostat, 5 s interval). Counters are read once at the end of each run; two `nolog` control cases measure the logging overhead. It does not touch `results/raw/`.
+
+```bash
+# check first that the DRAM counters exist (empty output = estimate only)
+perf list 2>/dev/null | grep -i imc
+
+# dry run (10 s, 1 rep), check results/diagnostics/work_log.csv and raw/ look sensible
+sudo env "PATH=$PATH" bash scripts/diagnose_work.sh 10 1
+
+# full run: 9 cases x 5 reps x ~62 s, about 47 minutes
+sudo env "PATH=$PATH" bash scripts/diagnose_work.sh 60 5
+
+python3 scripts/analysis/diagnostics_summary.py results/diagnostics
+```
+
+`sudo env "PATH=$PATH"` is needed because sudo drops user-local PATH entries (e.g. `~/.local/bin/fio`). Output: `results/diagnostics/diagnostics.csv` (one row per run), `work_log.csv` (one row per worker), `perf_log.csv`, and the untouched tool outputs in `raw/<case>_<rep>/`.
 
 ---
 

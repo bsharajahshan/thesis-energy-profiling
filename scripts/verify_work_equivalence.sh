@@ -40,11 +40,25 @@
 # main sweep. No root/RAPL access required — deliberately independent of
 # measure_rapl.sh and the concurrency-serialization fix in nextflow.config,
 # since this runs standalone via bash, not through Nextflow.
+#
+# Optional environment switches (added 2026-10-15 for the partial-load RQ3
+# variant, see granularity.nf):
+#   CPU_LOAD=50        add --cpu-load 50 to every CPU worker (default 100 = off),
+#                      i.e. check work equivalence for `--cpu_load 50` runs
+#   SUBSYSTEMS="cpu"   which sweeps to run (default "cpu ram")
+# Example: CPU_LOAD=50 SUBSYSTEMS=cpu bash scripts/verify_work_equivalence.sh 30
 
 set -u
 export LC_ALL=C
 
 DURATION="${1:-30}"
+CPU_LOAD="${CPU_LOAD:-100}"
+SUBSYSTEMS="${SUBSYSTEMS:-cpu ram}"
+CPU_LOAD_ARGS=()
+if (( CPU_LOAD < 100 )); then
+    CPU_LOAD_ARGS=(--cpu-load "$CPU_LOAD")
+    echo "CPU workers run at --cpu-load ${CPU_LOAD} (partial-load variant)"
+fi
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 
@@ -82,7 +96,7 @@ run_subsystem() {
                 local out_file="${TMP_DIR}/${label}_${mode}_${N}_${i}.out"
                 local cmd
                 if [[ "$stressor" == "cpu" ]]; then
-                    cmd=(stress-ng --cpu "$units" --timeout "${DURATION}s" --metrics-brief)
+                    cmd=(stress-ng --cpu "$units" "${CPU_LOAD_ARGS[@]}" --timeout "${DURATION}s" --metrics-brief)
                 else
                     cmd=(stress-ng --vm 1 --vm-bytes "${units}G" --timeout "${DURATION}s" --metrics-brief)
                 fi
@@ -127,8 +141,8 @@ run_subsystem() {
     done
 }
 
-run_subsystem "cpu" "cpu" 8
-run_subsystem "ram" "vm" 8
+[[ " $SUBSYSTEMS " == *" cpu "* ]] && run_subsystem "cpu" "cpu" 8
+[[ " $SUBSYSTEMS " == *" ram "* ]] && run_subsystem "ram" "vm" 8
 
 echo "CPU: compare 'total-bogo-ops' across N - values should be roughly"
 echo "constant in both modes (concurrent thread count stays ~8 regardless of"
