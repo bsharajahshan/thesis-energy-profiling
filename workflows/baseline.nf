@@ -118,6 +118,12 @@ process IO_BASELINE {
 
     # Write CSV row: experiment_id,task_name,mode,subsystem,intensity,task_count,duration_s,energy_uj,energy_j,dram_energy_uj,dram_energy_j,run_id,timestamp
     echo "\${EXPERIMENT_ID},\${TASK_NAME},\${MODE},\${SUBSYSTEM},\${INTENSITY},\${TASK_COUNT},\${DURATION_S},\${ENERGY_UJ},\${ENERGY_J},\${DRAM_ENERGY_UJ},\${DRAM_ENERGY_J},\${RUN_ID},\${TIMESTAMP}" > io_baseline_${io_pattern}_${rep_id}.csv
+
+    # Delete fio's 1 GiB test file (fio keeps it by default). Runs after the
+    # RAPL window has closed and the CSV is written, so it is not measured.
+    # Without this, every I/O task leaves 1 GiB in work/ (40 GiB per full
+    # session), which filled the test machine's disk on 2026-10-19.
+    rm -f io_job.*
     """
 }
 

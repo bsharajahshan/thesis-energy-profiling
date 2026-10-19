@@ -105,6 +105,10 @@ process SEQUENTIAL_MIXED {
 
     # Write CSV row: experiment_id,task_name,mode,combination,intensity,task_count,duration_s,energy_uj,energy_j,dram_energy_uj,dram_energy_j,cpu_util_pct,mem_util_pct,run_id,timestamp
     echo "\${EXPERIMENT_ID},\${TASK_NAME},\${MODE},\${COMBINATION},\${INTENSITY},\${TASK_COUNT},\${DURATION_S},\${ENERGY_UJ},\${ENERGY_J},\${DRAM_ENERGY_UJ},\${DRAM_ENERGY_J},\${CPU_UTIL_PCT},\${MEM_UTIL_PCT},\${RUN_ID},\${TIMESTAMP}" > rq2_sequential_${combo}_${rep_id}.csv
+
+    # Delete fio's 1 GiB test file (fio keeps it by default). Runs after all
+    # RAPL windows of this task have closed, so it is not measured.
+    rm -f io_job.*
     """
 }
 
@@ -158,6 +162,10 @@ process PARALLEL_MIXED {
 
     # Write CSV row: experiment_id,task_name,mode,combination,intensity,task_count,duration_s,energy_uj,energy_j,dram_energy_uj,dram_energy_j,cpu_util_pct,mem_util_pct,run_id,timestamp
     echo "\${EXPERIMENT_ID},\${TASK_NAME},\${MODE},\${COMBINATION},\${INTENSITY},\${TASK_COUNT},\${DURATION_S},\${ENERGY_UJ},\${ENERGY_J},\${DRAM_ENERGY_UJ},\${DRAM_ENERGY_J},\${CPU_UTIL_PCT},\${MEM_UTIL_PCT},\${RUN_ID},\${TIMESTAMP}" > rq2_parallel_${combo}_${rep_id}.csv
+
+    # Delete fio's 1 GiB test file (fio keeps it by default). Runs after the
+    # RAPL window has closed, so it is not measured.
+    rm -f io_job.*
     """
 }
 
