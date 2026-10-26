@@ -1,28 +1,35 @@
 #!/bin/bash
 
-# measure_rapl.sh - RAPL Energy Measurement Wrapper
+# measure_rapl.sh - RAPL Energy Measurement Wrapper (v2, 2026-10-26)
 
-# Usage: measure_rapl.sh "command to run" "task_name" "params_json"
-# Returns: duration_ns, package energy_uj (+ dram energy_uj if available), average_power_w
+# Usage: measure_rapl.sh "command to run" "task_name"
+# Prints KEY=value lines: duration, package energy, dram energy, average power,
+# CPU and memory utilisation, exit code, and the exact start/end time (ns since epoch).
 #
 # Reads both the package (PKG) domain and, if present, the dram sub-domain
 # separately - added 2026-10-02 after Philipp confirmed the memory
-# controller's energy is NOT counted in the package domain, only in dram
-# (contrary to this project's earlier assumption). Package alone can no
-# longer answer "how much did RAM use" - both numbers are needed together.
+# controller's energy is NOT counted in the package domain, only in dram.
+#
+# Changes in v2 (for the re-run of 2026-10):
+#   - A lock (flock) is held for the whole measurement, so two measurement windows
+#     can never overlap, whatever the workflow engine does. run_case.sh already holds
+#     the lock for its whole case and sets RAPL_LOCK_HELD=1 so this script does not
+#     lock a second time.
+#   - START_NS / END_NS are printed, so a run can be joined exactly to the session logs.
+#   - WORKLOAD_LOG (optional): file that receives the stdout and stderr of the workload.
+#   - The memory sampler is pure bash (no awk process every 0.5 s); one sample per second.
+#   - bc is no longer needed (awk does the arithmetic).
+#   - RAPL_ROOT (optional) points to another sysfs tree, for tests.
 
-# Force a locale with '.' as the decimal separator. Under e.g. de_DE.UTF-8,
-# awk/bc emit ',' instead (e.g. "93,715" instead of "93.715"), which corrupts
-# the CSV (extra fields) and makes bc choke on comma-decimal arithmetic.
+# Force a locale with '.' as the decimal separator (de_DE would print ',').
 export LC_ALL=C
 
 COMMAND="$1"
 TASK_NAME="$2"
-PARAMS="$3"
 
-# Verify RAPL package path exists and is readable
-RAPL_PKG_PATH="/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj"
-RAPL_PKG_MAX_PATH="/sys/class/powercap/intel-rapl/intel-rapl:0/max_energy_range_uj"
+RAPL_ROOT="${RAPL_ROOT:-/sys/class/powercap/intel-rapl}"
+RAPL_PKG_PATH="$RAPL_ROOT/intel-rapl:0/energy_uj"
+RAPL_PKG_MAX_PATH="$RAPL_ROOT/intel-rapl:0/max_energy_range_uj"
 if [[ ! -f "$RAPL_PKG_PATH" ]]; then
     echo "WARNING: RAPL not available at $RAPL_PKG_PATH" >&2
     RAPL_AVAILABLE=0
@@ -33,16 +40,12 @@ else
     RAPL_AVAILABLE=1
 fi
 
-# Locate the dram sub-domain by name rather than hardcoding its numeric
-# suffix. Confirmed as intel-rapl:0:2 on this project's test machine (via
-# turbostat, 2026-10-01), but the enumeration order isn't guaranteed to
-# match on a different machine or kernel version, so search intel-rapl:0's
-# sub-domains for whichever one's `name` file actually reads "dram".
+# Locate the dram sub-domain by name instead of a fixed number.
 RAPL_DRAM_PATH=""
 RAPL_DRAM_MAX_PATH=""
-RAPL_DRAM_UNREADABLE_PATH=""  # set if a dram domain exists but chmod hasn't been applied to it
+RAPL_DRAM_UNREADABLE_PATH=""
 if [[ $RAPL_AVAILABLE -eq 1 ]]; then
-    for d in /sys/class/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:*; do
+    for d in "$RAPL_ROOT"/intel-rapl:0/intel-rapl:0:*; do
         [[ -d "$d" ]] || continue
         [[ "$(cat "$d/name" 2>/dev/null)" == "dram" ]] || continue
         if [[ -r "$d/energy_uj" ]]; then
@@ -60,6 +63,16 @@ if [[ $RAPL_AVAILABLE -eq 1 ]]; then
     fi
 fi
 
+# Hard guarantee that measurement windows never overlap (see header).
+if [[ -z "${RAPL_LOCK_HELD:-}" ]]; then
+    if command -v flock >/dev/null 2>&1; then
+        exec 9>"${RAPL_LOCK_FILE:-/tmp/thesis_rapl_measure.lock}"
+        flock 9
+    else
+        echo "WARNING: flock not found - measurement windows are not protected against overlap" >&2
+    fi
+fi
+
 # Reads a RAPL energy counter, or 0 if the path is empty/unavailable.
 read_rapl_uj() {
     local path="$1"
@@ -70,12 +83,9 @@ read_rapl_uj() {
     fi
 }
 
-# Computes one domain's energy delta, handling counter wraparound using
-# THAT domain's own max_energy_range_uj read at runtime, instead of a
-# hardcoded 2^32-1 assumption. The old hardcoded constant produced a garbage
-# negative energy value on a real run (RQ3 RAM sequential N=8 rep 1,
-# 2026-09-25) because the real wraparound range was roughly 60x larger than
-# assumed - reading the actual value from sysfs avoids repeating that.
+# One domain's energy delta, with wraparound handled by THAT domain's own
+# max_energy_range_uj read at runtime (the old hardcoded 2^32-1 gave a negative
+# energy value on 2026-09-25).
 rapl_delta_uj() {
     local before="$1" after="$2" max_path="$3"
     if (( after < before )); then
@@ -83,7 +93,7 @@ rapl_delta_uj() {
         if [[ -n "$max_path" ]] && [[ -r "$max_path" ]]; then
             max_uj=$(cat "$max_path")
         else
-            max_uj=4294967295  # 2^32 - 1, fallback only if max_energy_range_uj is unreadable
+            max_uj=4294967295
         fi
         echo $(( max_uj - before + after ))
     else
@@ -95,43 +105,49 @@ rapl_delta_uj() {
 PKG_ENERGY_BEFORE=$(read_rapl_uj "$RAPL_PKG_PATH")
 DRAM_ENERGY_BEFORE=$(read_rapl_uj "$RAPL_DRAM_PATH")
 
-# Resource utilisation sampling (CPU%, memory%) — read directly from /proc so
-# there's no dependency on sysstat (mpstat/vmstat) being installed. This is
-# both a stress-verification signal (proof the workload actually loaded the
-# system) and, for RQ2, a required metric in its own right.
+# Whole-system CPU and memory utilisation, read from /proc (no sysstat needed).
 CPU_STAT_BEFORE=$(awk '/^cpu / {print $2,$3,$4,$5,$6,$7,$8}' /proc/stat)
 
 MEM_SAMPLE_FILE=$(mktemp)
 (
     while true; do
-        awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2} END {if (t>0) print 100*(1-a/t)}' /proc/meminfo
-        sleep 0.5
+        t=0; a=0
+        while read -r k v _; do
+            case "$k" in
+                MemTotal:) t=$v ;;
+                MemAvailable:) a=$v ;;
+            esac
+        done < /proc/meminfo
+        echo "$t $a"
+        sleep 1
     done
-) > "$MEM_SAMPLE_FILE" &
+) > "$MEM_SAMPLE_FILE" 2>/dev/null &
 MEM_SAMPLER_PID=$!
 trap 'kill $MEM_SAMPLER_PID 2>/dev/null' EXIT
 
-START_TIME=$(date +%s%N)
+START_NS=$(date +%s%N)
 
-# 2. Run the workload
-eval "$COMMAND"
+# 2. Run the workload (fd 9 = lock is closed for the workload)
+if [[ -n "${WORKLOAD_LOG:-}" ]]; then
+    eval "$COMMAND" > "$WORKLOAD_LOG" 2>&1 9>&-
+else
+    eval "$COMMAND" 9>&-
+fi
 WORKLOAD_EXIT=$?
 
 # 3. Read RAPL counters after
-END_TIME=$(date +%s%N)
+END_NS=$(date +%s%N)
 PKG_ENERGY_AFTER=$(read_rapl_uj "$RAPL_PKG_PATH")
 DRAM_ENERGY_AFTER=$(read_rapl_uj "$RAPL_DRAM_PATH")
 
-# Stop utilisation sampling and compute results
 kill "$MEM_SAMPLER_PID" 2>/dev/null
 wait "$MEM_SAMPLER_PID" 2>/dev/null
 trap - EXIT
 
 CPU_STAT_AFTER=$(awk '/^cpu / {print $2,$3,$4,$5,$6,$7,$8}' /proc/stat)
 
-# CPU utilisation = 1 - (idle+iowait delta)/(total delta), averaged over the
-# whole measurement window. Whole-system aggregate across all cores, not
-# per-process attribution.
+# CPU utilisation = 1 - (idle+iowait delta)/(total delta) over the whole window,
+# whole-system, not per process.
 CPU_UTIL_PCT=$(awk -v before="$CPU_STAT_BEFORE" -v after="$CPU_STAT_AFTER" 'BEGIN {
     split(before, b, " "); split(after, a, " ")
     idle_b = b[4] + b[5]; idle_a = a[4] + a[5]
@@ -142,11 +158,11 @@ CPU_UTIL_PCT=$(awk -v before="$CPU_STAT_BEFORE" -v after="$CPU_STAT_AFTER" 'BEGI
     if (dt > 0) printf "%.3f", 100 * (1 - di/dt); else print "0"
 }')
 
-# Memory utilisation = average % used across samples taken during the run
-MEM_UTIL_PCT=$(awk '{sum+=$1; n++} END {if (n>0) printf "%.3f", sum/n; else print "0"}' "$MEM_SAMPLE_FILE")
+# Memory utilisation = average % used across the samples taken during the run
+MEM_UTIL_PCT=$(awk '$1 > 0 {sum += 100 * (1 - $2/$1); n++} END {if (n>0) printf "%.3f", sum/n; else print "0"}' "$MEM_SAMPLE_FILE")
 rm -f "$MEM_SAMPLE_FILE"
 
-# 4. Handle counter wraparound (RAPL wraps on long runs) per domain
+# 4. Counter wraparound per domain
 ENERGY_UJ=$(rapl_delta_uj "$PKG_ENERGY_BEFORE" "$PKG_ENERGY_AFTER" "$RAPL_PKG_MAX_PATH")
 if [[ -n "$RAPL_DRAM_PATH" ]]; then
     DRAM_ENERGY_UJ=$(rapl_delta_uj "$DRAM_ENERGY_BEFORE" "$DRAM_ENERGY_AFTER" "$RAPL_DRAM_MAX_PATH")
@@ -154,14 +170,14 @@ else
     DRAM_ENERGY_UJ=""
 fi
 
-DURATION_NS=$((END_TIME - START_TIME))
-DURATION_S=$(echo "scale=3; $DURATION_NS / 1000000000" | bc)
+DURATION_NS=$((END_NS - START_NS))
+DURATION_S=$(awk -v n="$DURATION_NS" 'BEGIN { printf "%.3f", n / 1000000000 }')
 
-# 5. Calculate energy in Joules and average package power
-ENERGY_J=$(echo "scale=6; $ENERGY_UJ / 1000000" | bc)
-AVG_POWER_W=$(echo "scale=3; $ENERGY_J / $DURATION_S" | bc)
+# 5. Energy in Joules and average package power
+ENERGY_J=$(awk -v u="$ENERGY_UJ" 'BEGIN { printf "%.6f", u / 1000000 }')
+AVG_POWER_W=$(awk -v e="$ENERGY_J" -v d="$DURATION_S" 'BEGIN { if (d > 0) printf "%.3f", e / d; else print "0" }')
 if [[ -n "$DRAM_ENERGY_UJ" ]]; then
-    DRAM_ENERGY_J=$(echo "scale=6; $DRAM_ENERGY_UJ / 1000000" | bc)
+    DRAM_ENERGY_J=$(awk -v u="$DRAM_ENERGY_UJ" 'BEGIN { printf "%.6f", u / 1000000 }')
 else
     DRAM_ENERGY_J=""
 fi
@@ -177,6 +193,8 @@ echo "DRAM_ENERGY_J=$DRAM_ENERGY_J"
 echo "POWER_W=$AVG_POWER_W"
 echo "CPU_UTIL_PCT=$CPU_UTIL_PCT"
 echo "MEM_UTIL_PCT=$MEM_UTIL_PCT"
+echo "START_NS=$START_NS"
+echo "END_NS=$END_NS"
 echo "EXIT_CODE=$WORKLOAD_EXIT"
 
 exit $WORKLOAD_EXIT
