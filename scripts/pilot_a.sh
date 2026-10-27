@@ -84,9 +84,15 @@ say "1/6 snapshot"
 # ---- 2. capability checks ---------------------------------------------------------------------------------
 say "2/6 capability checks"
 : > "$OUT/checks.txt"
-# the energy counters are readable only by root by default (as in the earlier sessions: chmod a+r)
-$SUDO find "$RAPL_ROOT" -name energy_uj -exec chmod a+r {} + >/dev/null 2>&1
-[[ -r "$RAPL_ROOT/intel-rapl:0/energy_uj" ]] && verdict PASS rapl_package_readable || verdict FAIL rapl_package_readable "sudo chmod a+r on energy_uj"
+# The energy counters are readable only by root by default (as in the earlier sessions: chmod a+r).
+# /sys/class/powercap/intel-rapl is a symlink, and find does not follow a symlink that is given as the start path
+# (this made the first smoke test on 2026-10-27 fail), so find starts at the real folder. The second command is a
+# direct chmod of the files that are read, as a backup.
+RAPL_REAL="$(readlink -f "$RAPL_ROOT" 2>/dev/null || echo "$RAPL_ROOT")"
+$SUDO find "$RAPL_REAL" -name energy_uj -exec chmod a+r {} + >/dev/null 2>&1
+$SUDO chmod a+r "$RAPL_ROOT/intel-rapl:0/energy_uj" "$RAPL_ROOT"/intel-rapl:0/intel-rapl:0:*/energy_uj >/dev/null 2>&1
+{ echo "RAPL_ROOT=$RAPL_ROOT"; echo "RAPL_REAL=$RAPL_REAL"; ls -l "$RAPL_ROOT/intel-rapl:0/energy_uj" "$RAPL_ROOT"/intel-rapl:0/intel-rapl:0:*/energy_uj 2>&1; } > "$OUT/check_rapl_permissions.txt"
+[[ -r "$RAPL_ROOT/intel-rapl:0/energy_uj" ]] && verdict PASS rapl_package_readable || verdict FAIL rapl_package_readable "see check_rapl_permissions.txt"
 dram_ok=0
 for d in "$RAPL_ROOT"/intel-rapl:0/intel-rapl:0:*; do
     [[ "$(cat "$d/name" 2>/dev/null)" == "dram" && -r "$d/energy_uj" ]] && dram_ok=1
