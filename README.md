@@ -6,6 +6,55 @@ See **CLAUDE.md** for full project documentation, research questions, and scient
 
 ---
 
+## Fixed-work benchmark (re-run, November 2026)
+
+The thesis results come from this benchmark: `scripts/bench/` and `workflows/bench.nf`. Every job is a fixed amount of work (CPU operations, DRAM traffic of the memory jobs, bytes written by fio); runtime and energy are the results. Every run also records the work done (stress-ng operations, fio bytes, perf instructions, cycles and DRAM traffic), package and DRAM energy separately, start and end time, clock, power and temperature over the run, throttling, RAPL power limits and the CPU time of other programs. The fixed-time workflows further down (`main.nf`, `baseline.nf`, `mixed_load.nf`, `granularity.nf`) produced the October 2026 data and are kept unchanged as its record.
+
+### On the measurement laptop
+
+| Step | Command | Run it in | Time |
+|---|---|---|---|
+| once | `sudo bash scripts/bench/setup_root.sh` | your own terminal (asks for the password once) | 1 min |
+| pilot | `bash scripts/bench/run.sh pilot` | any shell, also an AI agent's | about 3.5 h |
+| main session | `bash scripts/bench/run.sh main` | any shell, also an AI agent's | about 13 h |
+
+- `run.sh` checks the laptop first and lists every problem at once (`FAIL` lines with the fix). If all is fine it starts the session in the background, detached from the shell, and returns within seconds with `STARTED`. It never asks anything and never needs sudo.
+- The same command again shows the progress while the session runs, continues the session after a crash or reboot (finished runs are not repeated), and shows the summary after the end. `bash scripts/bench/run.sh status` shows the progress too.
+- During a session: power cable in, lid open, laptop on the desk, no other programs (the session waits up to 20 min for an AI agent, browsers and editors to close, then starts anyway and notes it in the summary).
+- Result: one file, `~/thesis-results/thesis_<step>.tar.gz`, with a summary next to it (`thesis_<step>_summary.txt`). Its first line is `DONE`, `MISSING: ...`, `CHECK FAILED: ...` or `STOPPED: ...` (no power cable and a low battery; the same command continues). The session deletes its working files after the archive is written and checked.
+- After the archive has been received: `bash scripts/bench/run.sh clean`. After the thesis: `sudo bash scripts/bench/undo_root.sh` (undoes the one-time setup).
+
+### What a session does
+
+1. Start check (`preflight.py`): tools by full path whatever the shell's PATH is, RAPL, perf events, temperature sensor, power cable, power profile `balanced`, CPU topology, governor and EPP, memory, disk, background programs, git state. Writes `session.env`.
+2. Runs in the seeded order of `schedules/<step>.csv`, one Nextflow call per run (`workflows/bench.nf`; Nextflow itself does not keep the order of a list of inputs), up to 3 attempts per run, cooling breaks between rounds, a repair pass for runs that are still missing, idle runs at the start and the end. Each run waits until the package has cooled down before its measurement window opens.
+3. Pilot only: probe runs first, then `calibrate.py` sets the job sizes (`calibration_report.txt`), then repeats of the main jobs, one rehearsal round of every case and two recovery tests; `pilot_report.txt` lists what to check before the main session.
+4. End check (`check_session.py`): every planned run valid, no two measurement windows overlap, conditions in range; one combined table `results_all.csv` (plus `parts_all.csv`, `attempts_all.csv`) for the analysis.
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `scripts/bench/run.sh` | the one command (start, continue, status, clean) |
+| `scripts/bench/session.sh` | one session from start to end, detached |
+| `scripts/bench/preflight.py` | start check, writes `session.env` |
+| `scripts/bench/run_case.sh`, `window.sh`, `sampler.sh`, `common.sh` | one measured run |
+| `scripts/bench/benchlib.py` | commands, output parsers, valid / retry rules of one run |
+| `scripts/bench/cases.py`, `make_schedule.py`, `schedules/` | the 52 cases, pilot probes, seeded run order |
+| `scripts/bench/calibration.env` | every number the pilot decides (job sizes, limits) |
+| `scripts/bench/calibrate.py`, `pilot_report.py` | pilot: job sizes from the probes, pilot report |
+| `scripts/bench/check_session.py`, `sessionlib.py` | end check and combined tables; summary and status |
+| `scripts/bench/setup_root.sh`, `undo_root.sh` | the one-time root setup and its undo |
+| `workflows/bench.nf`, `workflows/bench.config` | Nextflow: one run per call, used with `nextflow -C` |
+
+### Tests (development machine)
+
+`bash scripts/bench/tests/run_all.sh` runs every test on Linux or WSL: Python tests, one measured run with stand-in tools on a fake sysfs, the root setup with stand-in system commands, Nextflow, and whole sessions including a pilot (the last two need Java 17+ and Nextflow 26.04.4: `NEXTFLOW=/path/to/nextflow NXF_HOME=/path`; `--quick` skips them). The Python tests also run on Windows (`py -I scripts/bench/tests/test_benchlib.py` and the other `test_*.py`). Real RAPL, perf, sensors, systemd and the real tools are only checked on the laptop: the pilot reports each of them.
+
+> The sections below describe the fixed-time benchmark of the October 2026 data.
+
+---
+
 ## Quick Start
 
 ### Prerequisites (Linux Machine Only)
