@@ -162,8 +162,14 @@ class TestCheck(unittest.TestCase):
             self.s.attempt("r1_mem_1g", "mem_1g", f"a{k}", 200 + 0.1 * k, valid=False, t_end_us=T0 + int((200.1 * k) * 1e3))
         self.s.attempt("r1_mem_1g", "mem_1g", "a4", 500, vm_ops_target=80, vm_ops_done=80,
                        cpu_ops_target=None, cpu_ops_done=None)
+        # like the pilot's killed call: valid on attempt 2, but in the repair pass
+        put(os.path.join(self.s.dir, "progress.txt"),
+            "2026-11-04T20:00:00Z r1_mem_1g MISSING round=1 pass=main attempts=3 nextflow_exit=0 seconds=300\n"
+            "2026-11-04T20:05:00Z r1_cpu_t8 VALID round=1 pass=main attempts=1 nextflow_exit=0 seconds=90\n"
+            "2026-11-04T23:00:00Z r1_mem_1g VALID round=1 pass=repair attempts=4 nextflow_exit=0 seconds=80\n"
+            "2026-11-04T23:02:00Z r2_cpu_t8 VALID round=2 pass=repair attempts=2 nextflow_exit=0 seconds=80\n")
         text, ok = self.s.check()
-        self.assertIn("valid runs started in schedule order except 1 place(s); 1 run(s) became valid only in the repair pass",
+        self.assertIn("valid runs started in schedule order except 1 place(s); 2 run(s) became valid only in the repair pass",
                       text)
 
     def test_summary_first_line(self):

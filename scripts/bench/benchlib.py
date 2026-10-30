@@ -24,7 +24,8 @@ Run spec (JSON, one per run, made from the schedule):
   optional pass-through labels: block, rq, round, order
   parts: list of
     {"name", "kind": "cpu", "threads", "ops" | "fixed_s", "load" (=100), "method" (="all"), "pin"}
-    {"name", "kind": "vm", "vm_bytes" (e.g. "8G"), "workers" (=1), "ops" | "fixed_s", "method" (="all"), "pin"}
+    {"name", "kind": "vm", "vm_bytes" (e.g. "8G"), "workers" (=1), "ops" | "fixed_s", "method" (="all"),
+     "keep" (bool, --vm-keep), "pin"}
     {"name", "kind": "io", "pattern" ("write" | "randwrite"), "bytes", "bs" (="4k"), "iodepth" (=16)}
     {"name", "kind": "idle", "seconds"}
   "ops" is the TOTAL number of bogo-ops the part must complete (all its
@@ -307,6 +308,8 @@ def build_plan(spec, env, out_dir):
                 vm_bytes = str(p["vm_bytes"])
                 argv = [env["STRESS_NG"], "--vm", str(n), "--vm-bytes", vm_bytes,
                         "--vm-method", p.get("method") or "all"]
+                if p.get("keep"):
+                    argv.append("--vm-keep")        # map the buffer once, not again for every operation
                 e.update(workers=n, vm_bytes=vm_bytes)
                 mems.append(size_to_bytes(vm_bytes) * n)
             if p.get("fixed_s") is not None:

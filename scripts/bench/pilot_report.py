@@ -117,20 +117,31 @@ def report(session):
         if any(w[0] is not None and w[1] is not None and w[0] < w[1] for w in done_target):
             points.append(f"repeatability: {cid} did not complete its work in every repeat")
 
-    # memory sizes
-    out.append("\n== memory sizes (DRAM traffic of a memory job, should be the same for every size)")
+    # memory sizes and RQ3 memory splits: the same data in every memory job
+    out.append("\n== memory jobs (DRAM traffic; every size and every RQ3 split should move the same data)")
+    mem_ids = ("mem_1g", "mem_2g", "mem_4g", "mem_8g", "rq3_ram_par_n2", "rq3_ram_par_n4", "rq3_ram_par_n8",
+               "rq3_ram_seq_n2", "rq3_ram_seq_n4", "rq3_ram_seq_n8")
     mem = {}
     for r in results:
-        if r.get("case_id") in ("mem_1g", "mem_2g", "mem_4g", "mem_8g") and traffic(r) is not None:
-            mem.setdefault(r["case_id"], []).append(traffic(r))
+        if r.get("case_id") in mem_ids and traffic(r) is not None:
+            mem.setdefault(r["case_id"], []).append((traffic(r), num(r.get("duration_s"))))
+    target = None
+    for line in cal_text.splitlines():
+        if line.strip().startswith("target:") and "GiB per memory job" in line:
+            target = num(line.split()[1])
     if "mem_8g" in mem:
-        ref = statistics.mean(mem["mem_8g"])
-        for cid in ("mem_1g", "mem_2g", "mem_4g", "mem_8g"):
+        ref = statistics.mean(t for t, _ in mem["mem_8g"])
+        out.append(f"  calibration target {target:.1f} GiB per job" if target else "  (no calibration target found)")
+        for cid in mem_ids:
             if cid in mem:
-                m = statistics.mean(mem[cid])
-                out.append(f"  {cid}: {m:.1f} GiB ({(m - ref) / ref * 100:+.1f} % vs 8 GB, n={len(mem[cid])})")
-                if abs(m - ref) / ref > 0.10:
-                    points.append(f"memory sizes: {cid} moves {(m - ref) / ref * 100:+.1f} % data compared to 8 GB")
+                t = statistics.mean(x for x, _ in mem[cid])
+                d = statistics.mean(x for _, x in mem[cid] if x)
+                vs_t = f", {(t - target) / target * 100:+.1f} % vs target" if target else ""
+                out.append(f"  {cid}: {t:.1f} GiB in {d:.0f} s ({(t - ref) / ref * 100:+.1f} % vs 8 GB{vs_t}, n={len(mem[cid])})")
+                if cid != "mem_8g" and abs(t - ref) / ref > 0.10:
+                    points.append(f"memory jobs: {cid} moves {(t - ref) / ref * 100:+.1f} % data compared to 8 GB")
+        if target and abs(ref - target) / target > 0.10:
+            points.append(f"memory jobs: the 8 GB job moves {(ref - target) / target * 100:+.1f} % data compared to the target")
     else:
         out.append("  no valid 8 GB memory job")
 
@@ -144,6 +155,10 @@ def report(session):
             wall.setdefault(f[1], 0.0)
             wall[f[1]] += float(kv.get("seconds", 0) or 0)
     round_rows = [r for r in results if r.get("phase") == "round"]
+    try:
+        planned_round = any(r["phase"] == "round" for r in cases.read_schedule(os.path.join(session, "schedule.csv")))
+    except OSError:
+        planned_round = True                # no schedule copy: assume a rehearsal was planned
     idle_rows = [r for r in results if r.get("phase") in ("idle_start", "idle_end")]
     if round_rows:
         longest = sorted(round_rows, key=lambda r: -(num(r.get("duration_s")) or 0))[:8]
@@ -163,9 +178,11 @@ def report(session):
         settle = [num(r.get("settle_s")) for r in round_rows if num(r.get("settle_s")) is not None]
         if settle:
             out.append(f"  wait before a run (settle): median {statistics.median(settle):.0f} s, max {max(settle):.0f} s")
-    else:
+    elif planned_round:
         out.append("  no valid rehearsal runs")
         points.append("rehearsal: no valid runs")
+    else:
+        out.append("  (not part of this step)")
 
     # recovery
     out.append("\n== recovery tests")
@@ -191,7 +208,7 @@ def report(session):
         if not ok:
             points.append(f"recovery: the killed Nextflow call of {kill_id} was not handled as expected")
     if not fail_id and not kill_id:
-        out.append("  not set up")
+        out.append("  (not part of this step)")
 
     # perf
     out.append("\n== perf")

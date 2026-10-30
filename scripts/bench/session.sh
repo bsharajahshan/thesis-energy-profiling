@@ -343,7 +343,7 @@ finish_session() {
     set_state running "end check, summary and archive"
     "$PYTHON" -I "$HERE/check_session.py" "$SESSION" "$STEP" > /dev/null \
         || log "end check: FAILED or could not run (see check.txt)"
-    if [[ "$STEP" == pilot ]]; then
+    if [[ "$STEP" == pilot || "$STEP" == memcheck ]]; then
         "$PYTHON" -I "$HERE/pilot_report.py" "$SESSION" > /dev/null || log "pilot report could not be written"
     fi
     "$PYTHON" -I "$HERE/sessionlib.py" summary "$SESSION" "$STEP" --final > /dev/null

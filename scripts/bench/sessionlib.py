@@ -28,7 +28,7 @@ import benchlib  # noqa: E402
 import cases  # noqa: E402
 
 SYSROOT = os.environ.get("BENCH_SYSROOT", "")
-STEPS = ("pilot", "main")
+STEPS = ("pilot", "memcheck", "main")
 
 
 def rows_of(session):

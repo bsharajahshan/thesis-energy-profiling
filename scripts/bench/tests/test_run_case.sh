@@ -215,7 +215,8 @@ show_on_fail "$f0"
 echo "11. RAPL counter wraps during the window"
 f0=$FAIL
 read -r top < "$F_PKG/max_energy_range_uj"
-put "$F_PKG/energy_uj" $((top - 50000000))     # wraps about 2 s from now, inside the 5 s window
+echo $((top - 50000000)) > "$CTL/pkg_set"     # wraps about 2 s from now, inside the 5 s window
+sleep 0.5
 spec wrap parallel false 5 '[{"kind": "idle", "seconds": 5}]'
 run wrap
 check "exit 0" rc_is 0

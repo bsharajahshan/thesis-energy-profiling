@@ -17,6 +17,7 @@ the same order.
 Usage:
   python -I make_schedule.py --rounds 5 --idle 5 --seed 20261029 --out schedules/main.csv
   python -I make_schedule.py --pilot --seed 20261029 --out schedules/pilot.csv
+  python -I make_schedule.py --memcheck --out schedules/memcheck.csv
          [--calibration calibration.env]
 Prints the run counts and a time estimate (from the rough times in calibration.env).
 """
@@ -79,10 +80,29 @@ def make_pilot_rows(seed, repeats=3):
     return [{k: r[k] for k in COLUMNS} for r in rows]
 
 
-def write_schedule(path, rows, rounds, idle, seed, pilot=False):
+# Memory check: idle probe, every candidate vm method at every buffer size, then
+# (with the chosen method and sizes) each memory job 3 times and the RQ3 memory
+# splits once, to see that every size and every split moves the same data.
+MEMCHECK_REPEATS = ["mem_1g", "mem_2g", "mem_4g", "mem_8g"]
+MEMCHECK_SPLITS = ["rq3_ram_par_n2", "rq3_ram_par_n4", "rq3_ram_par_n8", "rq3_ram_seq_n8"]
+
+
+def make_memcheck_rows(repeats=3):
+    rows = [{"run_id": "probe_idle", "phase": "probe", "case_id": "probe_idle"}]
+    rows += [{"run_id": c["case_id"], "phase": "probe", "case_id": c["case_id"]} for c in cases.MEMCHECK_CASES]
+    rows += [{"run_id": f"rep{k}_{cid}", "phase": "repeat", "case_id": cid}
+             for k in range(1, repeats + 1) for cid in MEMCHECK_REPEATS]
+    rows += [{"run_id": f"rep1_{cid}", "phase": "repeat", "case_id": cid} for cid in MEMCHECK_SPLITS]
+    for i, r in enumerate(rows, 1):
+        r.update(order=i, position=i, round="", part_order="")
+    return [{k: r[k] for k in COLUMNS} for r in rows]
+
+
+def write_schedule(path, rows, rounds, idle, seed, pilot=False, memcheck=False):
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="") as f:
-        made = f"--pilot --seed {seed}" if pilot else f"--rounds {rounds} --idle {idle} --seed {seed}"
+        made = ("--memcheck" if memcheck else f"--pilot --seed {seed}" if pilot
+                else f"--rounds {rounds} --idle {idle} --seed {seed}")
         f.write(f"# made by make_schedule.py {made}; {len(cases.CASES)} cases, {len(rows)} runs\n")
         w = csv.DictWriter(f, fieldnames=COLUMNS, lineterminator="\n")
         w.writeheader()
@@ -107,21 +127,27 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--rounds", type=int, default=5)
     ap.add_argument("--idle", type=int, default=5)
-    ap.add_argument("--seed", type=int, required=True)
+    ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", required=True)
     ap.add_argument("--calibration", default=os.path.join(HERE, "calibration.env"))
     ap.add_argument("--pilot", action="store_true", help="pilot schedule: probes, repeats, one rehearsal round")
+    ap.add_argument("--memcheck", action="store_true", help="memory check: vm method probes, memory repeats and splits")
     a = ap.parse_args(argv)
-    if a.pilot:
+    if a.memcheck:
+        rows = make_memcheck_rows()
+        a.rounds, a.idle = 0, 0
+    elif a.pilot:
         rows = make_pilot_rows(a.seed)
         a.rounds, a.idle = 1, 1
     else:
         rows = make_rows(a.rounds, a.idle, a.seed)
-    write_schedule(a.out, rows, a.rounds, a.idle, a.seed, pilot=a.pilot)
+    write_schedule(a.out, rows, a.rounds, a.idle, a.seed, pilot=a.pilot, memcheck=a.memcheck)
     cal = cases.load_calibration(a.calibration)
     total, per_block = estimate(rows, cal, a.rounds)
-    print(f"{a.out}: {len(rows)} runs" + (" (pilot: probes, repeats, one rehearsal round)" if a.pilot else
-          f" ({a.rounds} rounds x {len(cases.CASES)} cases + {2 * a.idle} idle)") + f", seed {a.seed}")
+    kind = (" (memory check: method probes, memory repeats and splits)" if a.memcheck else
+            " (pilot: probes, repeats, one rehearsal round)" if a.pilot else
+            f" ({a.rounds} rounds x {len(cases.CASES)} cases + {2 * a.idle} idle)")
+    print(f"{a.out}: {len(rows)} runs{kind}" + ("" if a.memcheck else f", seed {a.seed}"))
     for block, (n, t) in sorted(per_block.items(), key=lambda kv: -kv[1][1]):
         print(f"  {block:<5} {n:>4} runs  {t / 3600:5.1f} h")
     print(f"  breaks between rounds {max(0, a.rounds - 1) * float(cal['BREAK_S']) / 3600:.1f} h")

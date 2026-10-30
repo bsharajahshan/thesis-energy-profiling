@@ -24,6 +24,11 @@ scripts/bench/calibration.env for the main session (by hand, committed).
                        minus the idle traffic of probe_idle); target = traffic of
                        the 8 GB job in TARGET seconds; multiple of 8
   VM_S                 the longest memory job (watchdog and estimate only)
+  VM_METHOD, VM_KEEP   memory check only (probe_vmm_<method>_<n>g): the vm method whose
+                       data per operation per GB is steadiest across the four sizes
+                       ('all' kept if within MEMCHECK_KEEP_ALL_PCT points), --vm-keep;
+                       then VM_OPS_<n>G as above with that method
+  Only the parts whose probes are in the session's schedule are reported.
   IO_BYTES             sequential write speed x TARGET seconds, whole MiB
   IO_S_SEQ, IO_S_RAND  IO_BYTES / speed
   SETTLE_TEMP_C        temperature 60 s after the end of 60 s with 8 CPU threads
@@ -93,10 +98,78 @@ def round_to(x, step, minimum):
     return max(minimum, int(round(x / step)) * step)
 
 
+def memory_methods(session, base, g_idle, target, put, keep, rep):
+    """Memory check: choose the vm method, then size the memory jobs with it.
+
+    For every method and buffer size B (probe_vmm_<method>_<B>g, fixed time,
+    --vm-keep): DRAM data per operation = (traffic above idle - B, the first
+    touch of the buffer) / operations. A method whose operation is one pass over
+    the buffer gives about the same data per operation per GB at every size;
+    the spread of that value across the 4 sizes decides. 'all' is kept if its
+    spread is at most MEMCHECK_KEEP_ALL_PCT points above the best method."""
+    import statistics
+    rep.append(f"memory check (stress-ng --vm 1 --vm-keep; idle DRAM traffic {g_idle:.3f} GiB/s subtracted, "
+               f"and the first touch of the buffer):")
+    planned = {r["run_id"] for r in cases.read_schedule(os.path.join(session, "schedule.csv"))}
+    methods = sorted({m.group(1) for r in planned if (m := re.fullmatch(r"probe_vmm_(.+)_\dg", r))})
+    data = {}                                    # method -> {gb: (GiB per op, ops/s)}
+    for meth in methods:
+        data[meth] = {}
+        for gb in (1, 2, 4, 8):
+            p = probe(session, f"probe_vmm_{meth}_{gb}g")
+            s, g = part_speed(p), traffic_rate(p)
+            dur = num(p["res"].get("duration_s")) if p else None
+            ops = num(p["parts"][0].get("done")) if p and p["parts"] else None
+            if s and g is not None and dur and ops:
+                moved = (g - g_idle) * dur - gb
+                if moved > 0:
+                    data[meth][gb] = (moved / ops, s)
+        line = ", ".join(f"{gb} GB {v[0] * 1024 / gb:.4f} MiB per op per GB ({v[1]:.0f} ops/s)"
+                         for gb, v in sorted(data[meth].items()))
+        rep.append(f"  {meth}: {line or 'not measured'}")
+    spread = {}
+    for meth, d in data.items():
+        if len(d) == 4:
+            norm = [v[0] / gb for gb, v in d.items()]
+            spread[meth] = statistics.stdev(norm) / statistics.mean(norm) * 100
+    for meth in methods:
+        rep.append(f"  {meth}: spread of data per operation per GB across the sizes: "
+                   + (f"{spread[meth]:.1f} %" if meth in spread else "not all sizes measured"))
+    if not spread:
+        for gb in (1, 2, 4, 8):
+            keep(f"VM_OPS_{gb}G", "no vm method measured at all four sizes")
+        keep("VM_METHOD", "no vm method measured at all four sizes")
+        return
+    best = min(spread, key=spread.get)
+    margin = float(base.get("MEMCHECK_KEEP_ALL_PCT") or 2)
+    chosen = "all" if "all" in spread and spread["all"] <= spread[best] + margin else best
+    why = (f"spread {spread[chosen]:.1f} %" + ("" if chosen == best else f", best single method {best} {spread[best]:.1f} %")
+           + (f"; 'all' {spread['all']:.1f} % is more than {margin:g} points above the best" if "all" in spread and chosen != "all" else ""))
+    put("VM_METHOD", chosen, why)
+    put("VM_KEEP", 1, "the buffer is mapped once (--vm-keep)")
+    per_op8, ops_s8 = data[chosen][8]
+    target_gib = per_op8 * ops_s8 * target
+    rep.append(f"  target: {target_gib:.1f} GiB per memory job (8 GB job with {chosen} for {target:g} s)")
+    longest = 0.0
+    for gb in (1, 2, 4, 8):
+        per_op, ops_s = data[chosen][gb]
+        ops = round_to(target_gib / per_op, 8, 8)
+        longest = max(longest, ops / ops_s)
+        put(f"VM_OPS_{gb}G", ops, f"{target_gib:.1f} GiB / {per_op * 1024:.4f} MiB per op, multiple of 8; about {ops / ops_s:.0f} s")
+    put("VM_S", f"{longest:.1f}", "longest memory job")
+
+
 def calibrate(session, target=60.0):
     base_path = os.path.join(session, "calibration.env")
     base = benchlib.read_env(base_path)
     new, rep = {}, []
+    try:
+        planned = {r["run_id"] for r in cases.read_schedule(os.path.join(session, "schedule.csv"))}
+    except OSError:
+        planned = None                      # no schedule copy: report every section
+
+    def any_planned(prefix):
+        return planned is None or any(r.startswith(prefix) for r in planned)
 
     def keep(key, why):
         rep.append(f"  {key} kept at {base.get(key, '?')} (not measured: {why})")
@@ -121,113 +194,121 @@ def calibrate(session, target=60.0):
     else:
         keep("OTHER_CPU_LIMIT", "probe_idle not valid")
 
-    # -- how stress-ng counts --cpu-ops
-    rep.append("stress-ng operation count (probe_ops_semantics):")
-    sem = probe(session, "probe_ops_semantics")
-    if sem and sem["parts"] and num(sem["parts"][0].get("done")) and num(sem["parts"][0].get("flag_value")):
-        p0 = sem["parts"][0]
-        ratio = num(p0["done"]) / num(p0["flag_value"])
-        threads = num(p0.get("threads")) or 4
-        semantics = "per_instance" if ratio >= (threads + 1) / 2 else "total"
-        put("OPS_SEMANTICS", semantics, f"asked {int(num(p0['flag_value']))} with {int(threads)} workers, "
-                                         f"done {int(num(p0['done']))} = {ratio:.2f} x")
-    else:
-        keep("OPS_SEMANTICS", "probe_ops_semantics not valid")
+    if planned is None or "probe_ops_semantics" in planned:
+        # -- how stress-ng counts --cpu-ops
+        rep.append("stress-ng operation count (probe_ops_semantics):")
+        sem = probe(session, "probe_ops_semantics")
+        if sem and sem["parts"] and num(sem["parts"][0].get("done")) and num(sem["parts"][0].get("flag_value")):
+            p0 = sem["parts"][0]
+            ratio = num(p0["done"]) / num(p0["flag_value"])
+            threads = num(p0.get("threads")) or 4
+            semantics = "per_instance" if ratio >= (threads + 1) / 2 else "total"
+            put("OPS_SEMANTICS", semantics, f"asked {int(num(p0['flag_value']))} with {int(threads)} workers, "
+                                             f"done {int(num(p0['done']))} = {ratio:.2f} x")
+        else:
+            keep("OPS_SEMANTICS", "probe_ops_semantics not valid")
 
-    # -- CPU
-    rep.append("CPU (stress-ng --cpu-method all):")
-    speeds = {t: part_speed(probe(session, f"probe_cpu_t{t}")) for t in (1, 2, 4, 8)}
-    loads = {l: part_speed(probe(session, f"probe_cpu_load{l}")) for l in (50, 25)}
-    for t, s in speeds.items():
-        rep.append(f"  {t} thread(s): {s:.1f} ops/s" if s else f"  {t} thread(s): not measured")
-    cpu_ops = None
-    if speeds[8]:
-        cpu_ops = round_to(speeds[8] * target, 800, 800)
-        put("CPU_OPS", cpu_ops, f"{speeds[8]:.1f} ops/s x {target:g} s, multiple of 800")
-    else:
-        keep("CPU_OPS", "probe_cpu_t8 not valid")
-    ops_now = cpu_ops or int(base["CPU_OPS"])
-    for t, s in speeds.items():
-        if s:
-            put(f"CPU_S_T{t}", f"{ops_now / s:.1f}", f"{ops_now} ops / {s:.1f} ops/s")
+    if any_planned("probe_cpu_"):
+        # -- CPU
+        rep.append("CPU (stress-ng --cpu-method all):")
+        speeds = {t: part_speed(probe(session, f"probe_cpu_t{t}")) for t in (1, 2, 4, 8)}
+        loads = {l: part_speed(probe(session, f"probe_cpu_load{l}")) for l in (50, 25)}
+        for t, s in speeds.items():
+            rep.append(f"  {t} thread(s): {s:.1f} ops/s" if s else f"  {t} thread(s): not measured")
+        cpu_ops = None
+        if speeds[8]:
+            cpu_ops = round_to(speeds[8] * target, 800, 800)
+            put("CPU_OPS", cpu_ops, f"{speeds[8]:.1f} ops/s x {target:g} s, multiple of 800")
         else:
-            keep(f"CPU_S_T{t}", f"probe_cpu_t{t} not valid")
-    for l, s in loads.items():
-        if s:
-            put(f"CPU_S_T8_LOAD{l}", f"{ops_now / s:.1f}", f"8 threads at {l} % load: {s:.1f} ops/s")
-        else:
-            keep(f"CPU_S_T8_LOAD{l}", f"probe_cpu_load{l} not valid")
+            keep("CPU_OPS", "probe_cpu_t8 not valid")
+        ops_now = cpu_ops or int(base["CPU_OPS"])
+        for t, s in speeds.items():
+            if s:
+                put(f"CPU_S_T{t}", f"{ops_now / s:.1f}", f"{ops_now} ops / {s:.1f} ops/s")
+            else:
+                keep(f"CPU_S_T{t}", f"probe_cpu_t{t} not valid")
+        for l, s in loads.items():
+            if s:
+                put(f"CPU_S_T8_LOAD{l}", f"{ops_now / s:.1f}", f"8 threads at {l} % load: {s:.1f} ops/s")
+            else:
+                keep(f"CPU_S_T8_LOAD{l}", f"probe_cpu_load{l} not valid")
 
     # -- memory: the same DRAM traffic for every buffer size
-    rep.append(f"memory (stress-ng --vm 1 --vm-method all; idle DRAM traffic {g_idle:.3f} GiB/s subtracted):")
-    per_op, ops_s = {}, {}
-    for gb in (1, 2, 4, 8):
-        p = probe(session, f"probe_mem_{gb}g")
-        s, g = part_speed(p), traffic_rate(p)
-        if s and g is not None and g - g_idle > 0:
-            ops_s[gb], per_op[gb] = s, (g - g_idle) / s
-            rep.append(f"  {gb} GB: {s:.1f} ops/s, {g - g_idle:.3f} GiB/s above idle, {per_op[gb] * 1024:.4f} MiB per operation")
-        else:
-            rep.append(f"  {gb} GB: not measured")
-    if 8 in per_op:
-        target_gib = per_op[8] * ops_s[8] * target
-        rep.append(f"  target: {target_gib:.1f} GiB per memory job (8 GB job for {target:g} s)")
-        longest = 0.0
+    if planned is not None and any(r.startswith("probe_vmm_") for r in planned):
+        memory_methods(session, base, g_idle, target, put, keep, rep)
+    elif any_planned("probe_mem_"):
+        rep.append(f"memory (stress-ng --vm 1 --vm-method {base.get('VM_METHOD', 'all')}"
+                   f"{' --vm-keep' if base.get('VM_KEEP') == '1' else ''}; idle DRAM traffic {g_idle:.3f} GiB/s subtracted):")
+        per_op, ops_s = {}, {}
         for gb in (1, 2, 4, 8):
-            if gb in per_op:
-                ops = round_to(target_gib / per_op[gb], 8, 8)
-                longest = max(longest, ops / ops_s[gb])
-                put(f"VM_OPS_{gb}G", ops, f"{target_gib:.1f} GiB / {per_op[gb] * 1024:.4f} MiB per op, multiple of 8; "
-                                          f"about {ops / ops_s[gb]:.0f} s")
+            p = probe(session, f"probe_mem_{gb}g")
+            s, g = part_speed(p), traffic_rate(p)
+            if s and g is not None and g - g_idle > 0:
+                ops_s[gb], per_op[gb] = s, (g - g_idle) / s
+                rep.append(f"  {gb} GB: {s:.1f} ops/s, {g - g_idle:.3f} GiB/s above idle, {per_op[gb] * 1024:.4f} MiB per operation")
             else:
-                keep(f"VM_OPS_{gb}G", f"probe_mem_{gb}g not valid or no DRAM traffic")
-        put("VM_S", f"{longest:.1f}", "longest memory job")
-    else:
-        for gb in (1, 2, 4, 8):
-            keep(f"VM_OPS_{gb}G", "probe_mem_8g (the target) not valid or no DRAM traffic")
+                rep.append(f"  {gb} GB: not measured")
+        if 8 in per_op:
+            target_gib = per_op[8] * ops_s[8] * target
+            rep.append(f"  target: {target_gib:.1f} GiB per memory job (8 GB job for {target:g} s)")
+            longest = 0.0
+            for gb in (1, 2, 4, 8):
+                if gb in per_op:
+                    ops = round_to(target_gib / per_op[gb], 8, 8)
+                    longest = max(longest, ops / ops_s[gb])
+                    put(f"VM_OPS_{gb}G", ops, f"{target_gib:.1f} GiB / {per_op[gb] * 1024:.4f} MiB per op, multiple of 8; "
+                                              f"about {ops / ops_s[gb]:.0f} s")
+                else:
+                    keep(f"VM_OPS_{gb}G", f"probe_mem_{gb}g not valid or no DRAM traffic")
+            put("VM_S", f"{longest:.1f}", "longest memory job")
+        else:
+            for gb in (1, 2, 4, 8):
+                keep(f"VM_OPS_{gb}G", "probe_mem_8g (the target) not valid or no DRAM traffic")
 
-    # -- I/O
-    rep.append("I/O (fio, 4 KiB blocks, buffered, fsync at the end):")
-    seq, rnd = part_speed(probe(session, "probe_io_seq")), part_speed(probe(session, "probe_io_rand"))
-    for name, s in (("sequential", seq), ("random", rnd)):
-        rep.append(f"  {name}: {s / MIB:.1f} MiB/s" if s else f"  {name}: not measured")
-    io_bytes = None
-    if seq:
-        io_bytes = max(MIB, int(seq * target // MIB) * MIB)
-        put("IO_BYTES", io_bytes, f"{seq / MIB:.1f} MiB/s x {target:g} s, whole MiB ({io_bytes / 1024 ** 3:.2f} GiB)")
-        put("IO_S_SEQ", f"{io_bytes / seq:.1f}", "IO_BYTES / sequential speed")
-    else:
-        keep("IO_BYTES", "probe_io_seq not valid")
-        keep("IO_S_SEQ", "probe_io_seq not valid")
-    if rnd:
-        put("IO_S_RAND", f"{(io_bytes or int(base['IO_BYTES'])) / rnd:.1f}", "IO_BYTES / random speed")
-    else:
-        keep("IO_S_RAND", "probe_io_rand not valid")
+    if any_planned("probe_io_"):
+        # -- I/O
+        rep.append("I/O (fio, 4 KiB blocks, buffered, fsync at the end):")
+        seq, rnd = part_speed(probe(session, "probe_io_seq")), part_speed(probe(session, "probe_io_rand"))
+        for name, s in (("sequential", seq), ("random", rnd)):
+            rep.append(f"  {name}: {s / MIB:.1f} MiB/s" if s else f"  {name}: not measured")
+        io_bytes = None
+        if seq:
+            io_bytes = max(MIB, int(seq * target // MIB) * MIB)
+            put("IO_BYTES", io_bytes, f"{seq / MIB:.1f} MiB/s x {target:g} s, whole MiB ({io_bytes / 1024 ** 3:.2f} GiB)")
+            put("IO_S_SEQ", f"{io_bytes / seq:.1f}", "IO_BYTES / sequential speed")
+        else:
+            keep("IO_BYTES", "probe_io_seq not valid")
+            keep("IO_S_SEQ", "probe_io_seq not valid")
+        if rnd:
+            put("IO_S_RAND", f"{(io_bytes or int(base['IO_BYTES'])) / rnd:.1f}", "IO_BYTES / random speed")
+        else:
+            keep("IO_S_RAND", "probe_io_rand not valid")
 
-    # -- cooling curve
-    rep.append("cooling (probe_cooldown: 8 CPU threads, then idle):")
-    cool = probe(session, "probe_cooldown")
-    curve = []
-    if cool and cool["parts"]:
-        heavy = next((p for p in cool["parts"] if p.get("kind") == "cpu"), None)
-        t_end = num(heavy.get("t_end_us")) if heavy else None
-        samples = benchlib.parse_sampler(benchlib.read_text(os.path.join(cool["dir"], "sampler.txt")))
-        if t_end:
-            curve = [((t - t_end) / 1e6, c / 1000) for t, _, _, c in samples if c is not None and t >= t_end]
-    if curve:
-        def at(sec):
-            later = [c for s, c in curve if s >= sec]
-            return later[0] if later else curve[-1][1]
-        points = ", ".join(f"{s} s: {at(s):.0f} C" for s in (0, 15, 30, 60, 120, 300) if s <= curve[-1][0] or s == 0)
-        rep.append(f"  package after the heavy part: {points} (last sample {curve[-1][0]:.0f} s: {curve[-1][1]:.0f} C)")
-        idle_c = num(idle["res"].get("temp_start_c")) if idle else None
-        limit = math.ceil(at(60))
-        if idle_c is not None:
-            limit = max(limit, math.ceil(idle_c) + 3)
-        put("SETTLE_TEMP_C", min(75, limit), "temperature 60 s after the heavy part, rounded up"
-            + (f"; at least idle {idle_c:.0f} + 3" if idle_c is not None else "") + "; at most 75")
-    else:
-        keep("SETTLE_TEMP_C", "probe_cooldown not valid or no temperature samples")
+    if planned is None or "probe_cooldown" in planned:
+        # -- cooling curve
+        rep.append("cooling (probe_cooldown: 8 CPU threads, then idle):")
+        cool = probe(session, "probe_cooldown")
+        curve = []
+        if cool and cool["parts"]:
+            heavy = next((p for p in cool["parts"] if p.get("kind") == "cpu"), None)
+            t_end = num(heavy.get("t_end_us")) if heavy else None
+            samples = benchlib.parse_sampler(benchlib.read_text(os.path.join(cool["dir"], "sampler.txt")))
+            if t_end:
+                curve = [((t - t_end) / 1e6, c / 1000) for t, _, _, c in samples if c is not None and t >= t_end]
+        if curve:
+            def at(sec):
+                later = [c for s, c in curve if s >= sec]
+                return later[0] if later else curve[-1][1]
+            points = ", ".join(f"{s} s: {at(s):.0f} C" for s in (0, 15, 30, 60, 120, 300) if s <= curve[-1][0] or s == 0)
+            rep.append(f"  package after the heavy part: {points} (last sample {curve[-1][0]:.0f} s: {curve[-1][1]:.0f} C)")
+            idle_c = num(idle["res"].get("temp_start_c")) if idle else None
+            limit = math.ceil(at(60))
+            if idle_c is not None:
+                limit = max(limit, math.ceil(idle_c) + 3)
+            put("SETTLE_TEMP_C", min(75, limit), "temperature 60 s after the heavy part, rounded up"
+                + (f"; at least idle {idle_c:.0f} + 3" if idle_c is not None else "") + "; at most 75")
+        else:
+            keep("SETTLE_TEMP_C", "probe_cooldown not valid or no temperature samples")
 
     # -- EPP of the default power profile (start check)
     rep.append("power setting:")

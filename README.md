@@ -15,8 +15,9 @@ The thesis results come from this benchmark: `scripts/bench/` and `workflows/ben
 | Step | Command | Run it in | Time |
 |---|---|---|---|
 | once | `sudo bash scripts/bench/setup_root.sh` | your own terminal (asks for the password once) | 1 min |
-| pilot | `bash scripts/bench/run.sh pilot` | any shell, also an AI agent's | about 3.5 h |
-| main session | `bash scripts/bench/run.sh main` | any shell, also an AI agent's | about 13 h |
+| pilot | `bash scripts/bench/run.sh pilot` | any shell, also an AI agent's | about 3 h (done 2026-10-29) |
+| memory check | `bash scripts/bench/run.sh memcheck` | any shell, also an AI agent's | about 45 min |
+| main session | `bash scripts/bench/run.sh main` | any shell, also an AI agent's | about 10 h |
 
 - `run.sh` checks the laptop first and lists every problem at once (`FAIL` lines with the fix). If all is fine it starts the session in the background, detached from the shell, and returns within seconds with `STARTED`. It never asks anything and never needs sudo.
 - The same command again shows the progress while the session runs, continues the session after a crash or reboot (finished runs are not repeated), and shows the summary after the end. `bash scripts/bench/run.sh status` shows the progress too.
@@ -28,7 +29,7 @@ The thesis results come from this benchmark: `scripts/bench/` and `workflows/ben
 
 1. Start check (`preflight.py`): tools by full path whatever the shell's PATH is, RAPL, perf events, temperature sensor, power cable, power profile `balanced`, CPU topology, governor and EPP, memory, disk, background programs, git state. Writes `session.env`.
 2. Runs in the seeded order of `schedules/<step>.csv`, one Nextflow call per run (`workflows/bench.nf`; Nextflow itself does not keep the order of a list of inputs), up to 3 attempts per run, cooling breaks between rounds, a repair pass for runs that are still missing, idle runs at the start and the end. Each run waits until the package has cooled down before its measurement window opens.
-3. Pilot only: probe runs first, then `calibrate.py` sets the job sizes (`calibration_report.txt`), then repeats of the main jobs, one rehearsal round of every case and two recovery tests; `pilot_report.txt` lists what to check before the main session.
+3. Pilot only: probe runs first, then `calibrate.py` sets the job sizes (`calibration_report.txt`), then repeats of the main jobs, one rehearsal round of every case and two recovery tests; `pilot_report.txt` lists what to check before the main session. Memory check only: the vm methods `all`, `write64`, `read64`, `wrrd128nt` (with `--vm-keep`) at every buffer size; `calibrate.py` keeps the method whose DRAM data per operation per GB is steadiest across the sizes and sizes the memory jobs with it, then every memory job and the RQ3 memory splits run again to show they move the same data.
 4. End check (`check_session.py`): every planned run valid, no two measurement windows overlap, conditions in range; one combined table `results_all.csv` (plus `parts_all.csv`, `attempts_all.csv`) for the analysis.
 
 ### Files

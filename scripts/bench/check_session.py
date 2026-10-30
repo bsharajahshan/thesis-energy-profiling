@@ -193,8 +193,10 @@ def check(session, step="?"):
     started = sorted((r for r in results if num(r.get("t_start_us")) is not None), key=lambda r: num(r["t_start_us"]))
     planned_pos = {s["run_id"]: i for i, s in enumerate(schedule)}
     out_of_order = sum(1 for a, b in zip(started, started[1:]) if planned_pos[b["run_id"]] < planned_pos[a["run_id"]])
-    per_call = benchlib.to_int(benchlib.read_env(os.path.join(session, "session.env")).get("MAX_ATTEMPTS")) or 3
-    later = sum(1 for r in results if (benchlib.to_int(r.get("attempt")) or 0) > per_call)
+    # which pass made a run valid: progress.txt "<time> <run_id> VALID ... pass=<pass> ..."
+    later = sum(1 for line in benchlib.read_text(os.path.join(session, "progress.txt")).splitlines()
+                if len(line.split()) > 2 and line.split()[2] == "VALID" and "pass=" in line
+                and line.split("pass=")[1].split()[0] in ("repair", "probe_repair"))
     add("INFO", "order", f"valid runs started in schedule order except {out_of_order} place(s); "
                          f"{later} run(s) became valid only in the repair pass")
 

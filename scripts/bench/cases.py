@@ -56,8 +56,9 @@ def cpu(threads, frac=1, load=100, fixed=False, pin=None, ops_key=None):
             "ops_key": ops_key}
 
 
-def vm(gb, frac=1, fixed=False, pin=None):
-    return {"kind": "vm", "gb": gb, "frac": Fraction(frac), "fixed": fixed, "pin": pin}
+# method / keep: None = VM_METHOD / VM_KEEP of the calibration (memory-check probes set them)
+def vm(gb, frac=1, fixed=False, pin=None, method=None, keep=None):
+    return {"kind": "vm", "gb": gb, "frac": Fraction(frac), "fixed": fixed, "pin": pin, "method": method, "keep": keep}
 
 
 def io(pattern, bytes_key="IO_BYTES"):
@@ -187,7 +188,18 @@ add_probe("probe_io_rand", "parallel", [io("randwrite", bytes_key="PROBE_IO_BYTE
 add_probe("probe_cooldown", "sequential", [cpu(8, fixed="MECH_FIXED_S"), idle(seconds_key="PROBE_COOLDOWN_S")],
           lambda cal: float(cal["MECH_FIXED_S"]) + float(calv(cal, "PROBE_COOLDOWN_S")))
 
-CASE_BY_ID = {c["case_id"]: c for c in CASES + [IDLE_CASE] + PILOT_CASES}
+# Memory check (run.sh memcheck): every candidate vm method of MEMCHECK_METHODS at
+# every buffer size, PROBE_S fixed time with --vm-keep; calibrate.py picks the
+# method whose DRAM data per operation per GB is steadiest across sizes.
+MEMCHECK_DEFAULT_METHODS = ("all", "write64", "read64", "wrrd128nt")
+MEMCHECK_CASES = []
+for _m in MEMCHECK_DEFAULT_METHODS:
+    for _gb in (1, 2, 4, 8):
+        MEMCHECK_CASES.append({"case_id": f"probe_vmm_{_m}_{_gb}g", "block": "probe", "rq": "memcheck",
+                               "mode": "parallel", "parts": [vm(_gb, fixed="PROBE_S", method=_m, keep=True)],
+                               "expected": secs("PROBE_S"), "governor": "main", "logging": True})
+
+CASE_BY_ID = {c["case_id"]: c for c in CASES + [IDLE_CASE] + PILOT_CASES + MEMCHECK_CASES}
 
 
 def mixed_sequential(case):
@@ -274,7 +286,8 @@ def resolve_part(p, cal, pins):
         else:
             d["ops"] = whole(int(cal["CPU_OPS"]) * p["frac"])
     elif kind == "vm":
-        d = {"kind": "vm", "vm_bytes": f"{p['gb']}G"}
+        d = {"kind": "vm", "vm_bytes": f"{p['gb']}G", "method": p.get("method") or cal.get("VM_METHOD") or "all",
+             "keep": bool(p["keep"]) if p.get("keep") is not None else cal.get("VM_KEEP", "0") == "1"}
         if p["fixed"]:
             d["fixed_s"] = fixed_seconds()
         else:

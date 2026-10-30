@@ -3,6 +3,7 @@
 # run.sh - the ONE command on the measurement laptop.
 #
 #   bash scripts/bench/run.sh pilot     start (or continue) the pilot
+#   bash scripts/bench/run.sh memcheck  start (or continue) the memory check (after the pilot)
 #   bash scripts/bench/run.sh main      start (or continue) the main session
 #   bash scripts/bench/run.sh status    how far the sessions are
 #   bash scripts/bench/run.sh clean     delete everything the benchmark wrote
@@ -36,7 +37,7 @@ done
 FLOCK="$(command -v flock 2>/dev/null || echo /usr/bin/flock)"
 
 usage() {
-    echo "usage: bash scripts/bench/run.sh pilot | main | status | clean"
+    echo "usage: bash scripts/bench/run.sh pilot | memcheck | main | status | clean"
 }
 
 session_running() {   # the session holds $RESULTS/.session.lock for its whole life
@@ -103,7 +104,7 @@ fi
 case "${1:-}" in
     status) status; exit 0 ;;
     clean) clean; exit $? ;;
-    pilot|main) STEP="$1" ;;
+    pilot|main|memcheck) STEP="$1" ;;
     *) usage >&2; exit 2 ;;
 esac
 

@@ -372,7 +372,35 @@ if (( FAIL > f0 )); then
     cp "$PA" /tmp/pilot_test_archive.tar.gz && echo "    archive kept: /tmp/pilot_test_archive.tar.gz (WSL)"
 fi
 
-echo "S9. nothing read stdin or had a terminal"
+echo "S9. memory check step (run.sh memcheck)"
+f0=$FAIL
+runsh clean > /dev/null
+cat > "$ROOT/memcheck.csv" <<'EOF'
+# test memory check: idle, two method probes, one memory job
+order,run_id,phase,round,position,case_id,part_order
+1,probe_idle,probe,,1,probe_idle,
+2,probe_vmm_write64_1g,probe,,2,probe_vmm_write64_1g,
+3,probe_vmm_write64_8g,probe,,3,probe_vmm_write64_8g,
+4,rep1_mem_8g,repeat,,4,mem_8g,
+EOF
+SES="$RES/memcheck"
+MA="$RES/thesis_memcheck.tar.gz"
+n_calls=$(wc -l < "$CTL/stress_calls")
+OUT="$(setsid -w env -i HOME="$HOME" PATH=/usr/bin:/bin BENCH_RESULTS="$RES" BENCH_SCHEDULE="$ROOT/memcheck.csv" \
+    BENCH_CALIBRATION="$ROOT/cal_pilot.env" BENCH_SYSROOT="$R" BENCH_EXTRA_PATH="$BIN:$(dirname "$NEXTFLOW")" \
+    BENCH_IO_DIR="$T/io" BENCH_DISK_STAT="$R/sys/block/sdb/stat" BENCH_SKIP_GIT=1 \
+    NXF_HOME="${NXF_HOME:-$HOME/.nextflow}" NXF_VER=26.04.4 bash "$BENCH/run.sh" memcheck < /dev/null 2>&1)"
+check "memcheck STARTED" out_has "^STARTED: memcheck session"
+check "memcheck ends" wait_state done 400
+check "summary: DONE" first_line_is DONE
+check "probes ran with the method and --vm-keep" \
+    bash -c "tail -n +$((n_calls + 1)) '$CTL/stress_calls' | grep -q -e '--vm-method write64 --vm-keep --timeout 1s --metrics-brief'"
+check "calibration report and memory check report in the archive" bash -c "tar -tzf '$MA' | grep -qx 'memcheck/calibration_report.txt' && tar -xOzf '$MA' memcheck/pilot_report.txt | grep -q '== memory jobs'"
+check "no rehearsal point for a step without rehearsal" bash -c "! tar -xOzf '$MA' memcheck/pilot_report.txt | grep -q 'rehearsal: no valid runs'"
+check "no processes left" no_leftovers
+(( FAIL > f0 )) && { show; tar -xOzf "$MA" memcheck/pilot_report.txt 2>/dev/null | sed 's/^/    report: /' | tail -n 20; }
+
+echo "S10. nothing read stdin or had a terminal"
 check "no violations recorded" test ! -s "$CTL/violations"
 
 echo

@@ -175,6 +175,58 @@ class TestCalibrate(unittest.TestCase):
         self.assertEqual(self.p.cal()["OTHER_CPU_LIMIT"], "0.50")       # 2 x 0.4, capped
 
 
+class TestMemoryCheck(unittest.TestCase):
+    """Memory check: choose the vm method whose data per operation grows with the buffer size."""
+
+    def setUp(self):
+        self.p = Pilot()
+
+    def tearDown(self):
+        self.p.close()
+
+    def probes(self, factors):
+        """factors[method] = 4 multipliers of the ideal 1e-4 GiB per operation per GB (1, 2, 4, 8 GB)."""
+        rows = ["order,run_id,phase,round,position,case_id,part_order", "1,probe_idle,probe,,1,probe_idle,"]
+        self.p.run("probe_idle", res=dict(duration_s=60.0, dram_read_gib=1.2, dram_write_gib=0.6, other_cpu_per_s=0.02,
+                                          temp_start_c=45.0), parts=[dict(kind="idle", done=60.0, duration_s=60.0)])
+        g_idle = 1.8 / 60
+        for meth, fs in factors.items():
+            for gb, f in zip((1, 2, 4, 8), fs):
+                rid = f"probe_vmm_{meth}_{gb}g"
+                rows.append(f"{len(rows)},{rid},probe,,{len(rows)},{rid},")
+                ops = 1_280_000 // gb                                  # 40000/gb ops/s for 32 s
+                gib = gb * 1e-4 * f * ops + gb + g_idle * 32           # operations + first touch + idle
+                self.p.run(rid, res=dict(duration_s=32.0, dram_read_gib=gib * 0.5, dram_write_gib=gib * 0.5),
+                           parts=[dict(kind="vm", done=ops, duration_s=32.0)])
+        put(os.path.join(self.p.dir, "schedule.csv"), "\n".join(rows) + "\n")
+
+    def test_steadiest_method_wins(self):
+        self.probes({"all": (1.0, 1.9, 1.2, 1.0), "write64": (1, 1, 1, 1), "read64": (1.0, 1.0, 1.02, 0.98)})
+        self.assertEqual(quiet(calibrate.main, ["calibrate.py", self.p.dir]), 0)
+        c = self.p.cal()
+        self.assertEqual((c["VM_METHOD"], c["VM_KEEP"]), ("write64", "1"))
+        self.assertEqual(c["VM_OPS_8G"], "300000")                     # 240 GiB / 8e-4 GiB per op
+        self.assertEqual(c["VM_OPS_1G"], "2400000")                    # 240 GiB / 1e-4 GiB per op
+        self.assertEqual(c["VM_S"], "60.0")
+        self.assertEqual(c["CPU_OPS"], "412000")                       # not in this schedule: untouched
+        report = benchlib.read_text(os.path.join(self.p.dir, "calibration_report.txt"))
+        self.assertIn("write64: spread of data per operation per GB across the sizes: 0.0 %", report)
+        self.assertNotIn("CPU (stress-ng", report)                     # only the parts that were planned
+        self.assertNotIn("I/O (fio", report)
+        self.assertIn("'all'", report)
+
+    def test_all_is_kept_when_nearly_as_steady(self):
+        self.probes({"all": (1.0, 1.01, 0.99, 1.0), "write64": (1, 1, 1, 1)})
+        quiet(calibrate.main, ["calibrate.py", self.p.dir])
+        self.assertEqual(self.p.cal()["VM_METHOD"], "all")
+
+    def test_method_with_a_failed_size_is_not_chosen(self):
+        self.probes({"write64": (1, 1, 1, 1), "read64": (1.0, 1.0, 1.0, 1.0)})
+        shutil.rmtree(os.path.join(self.p.dir, "runs", "probe_vmm_write64_4g"))
+        quiet(calibrate.main, ["calibrate.py", self.p.dir])
+        self.assertEqual(self.p.cal()["VM_METHOD"], "read64")
+
+
 def write_table(path, columns, rows):
     full = [{c: r.get(c, "") for c in columns} for r in rows]
     with open(path, "w", encoding="utf-8", newline="") as f:
@@ -220,7 +272,8 @@ class TestPilotReport(unittest.TestCase):
         put(os.path.join(d, "recovery_test.txt"), "fail=r1_cpu_t1\nkill=r1_cpu_t2\nkilled_nextflow r1_cpu_t2 2026-11-02T20:00:00Z\n")
         put(os.path.join(d, "progress.txt"), "".join(f"2026-11-02T20:00:00Z {r['run_id']} VALID round=1 pass=main attempts=1 "
                                                       f"nextflow_exit=0 seconds=150\n" for r in rows))
-        put(os.path.join(d, "calibration_report.txt"), "CALIBRATION\n  CPU_OPS = 360000\nRESULT: calibration.env written\n")
+        put(os.path.join(d, "calibration_report.txt"), "CALIBRATION\n  CPU_OPS = 360000\n"
+            "  target: 300.0 GiB per memory job (8 GB job for 60 s)\nRESULT: calibration.env written\n")
 
     def test_good_pilot(self):
         self.make()
@@ -228,8 +281,9 @@ class TestPilotReport(unittest.TestCase):
         self.assertIn("injected failed attempt (r1_cpu_t1): PASSED", text)
         self.assertIn("killed Nextflow call (r1_cpu_t2): PASSED", text)
         self.assertIn("cpu_t8: n=3, time 60.5 s (spread 0.8 %)", text)
-        self.assertIn("mem_1g: 300.0 GiB (+0.0 % vs 8 GB, n=3)", text)
-        self.assertIn("mem_2g: 300.0 GiB (+0.0 % vs 8 GB, n=1)", text)
+        self.assertIn("mem_1g: 300.0 GiB in 75 s (+0.0 % vs 8 GB, +0.0 % vs target, n=3)", text)
+        self.assertIn("mem_2g: 300.0 GiB in 100 s (+0.0 % vs 8 GB, +0.0 % vs target, n=1)", text)
+        self.assertIn("calibration target 300.0 GiB per job", text)
         self.assertIn("3 of 52 cases valid; one round took 0.12 h", text)
         self.assertIn("totals from: summary", text)
         self.assertIn("soft flags on valid runs: settle_timeout 1", text)
@@ -241,7 +295,7 @@ class TestPilotReport(unittest.TestCase):
         put(os.path.join(self.p.dir, "recovery_test.txt"), "fail=r1_cpu_t1\nkill=r1_mem_2g\n")
         text = pilot_report.report(self.p.dir)
         self.assertIn("repeatability: cpu_t8 time spread 9.1 % (above 5 %)", text)
-        self.assertIn("memory sizes: mem_1g moves +20.0 % data compared to 8 GB", text)
+        self.assertIn("memory jobs: mem_1g moves +20.0 % data compared to 8 GB", text)
         self.assertIn("recovery: the killed Nextflow call of r1_mem_2g was not handled as expected", text)
 
     def test_main_writes_file(self):

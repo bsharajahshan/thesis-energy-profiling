@@ -134,7 +134,7 @@ printf 'win_start %s %s %s\n' "$t" "$E_PKG" "$E_DRAM" >> "$W"
 # lets go of the lock (fd 9) so that its own `sleep` cannot block later windows.
 (
     exec 9>&-
-    sleep "$PLAN_WATCHDOG_S"
+    sleep "$PLAN_WATCHDOG_S" || exit 0        # stopped early (run over or killed from outside): not fired
     event "watchdog_fired $EPOCHREALTIME"
     : > "$OUT/.watchdog_fired"
     kill_tree "$$" "$BASHPID"

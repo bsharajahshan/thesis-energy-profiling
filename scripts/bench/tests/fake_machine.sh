@@ -123,6 +123,8 @@ _fake_ticker() {
     local p d m o u s rate
     while :; do
         read -r p < "$F_PKG/energy_uj"; read -r m < "$F_PKG/max_energy_range_uj"
+        # a test sets the counter through $CTL/pkg_set, so only the ticker writes energy_uj
+        if [[ -s "$CTL/pkg_set" ]]; then read -r p < "$CTL/pkg_set"; rm -f "$CTL/pkg_set"; fi
         read -r d < "$F_DRAM/energy_uj"; read -r rate < "$CTL/system_rate"
         p=$((p + 2500000)); (( p >= m )) && p=$((p - m))
         put "$F_PKG/energy_uj" "$p"

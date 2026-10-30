@@ -63,7 +63,34 @@ class TestCaseList(unittest.TestCase):
         ops = {spec_for(f"cpu_t{t}")["parts"][0]["ops"] for t in (1, 2, 4, 8)}
         self.assertEqual(ops, {int(cal()["CPU_OPS"])})
         self.assertEqual(spec_for("mem_4g")["parts"][0], {"kind": "vm", "vm_bytes": "4G", "ops": int(cal()["VM_OPS_4G"]),
+                                                          "method": cal()["VM_METHOD"], "keep": cal()["VM_KEEP"] == "1",
                                                           "name": "ram"})
+
+    def test_memory_method_and_keep_reach_the_command(self):
+        spec = spec_for("mem_8g")
+        plan, files, _ = benchlib.build_plan(spec, {"STRESS_NG": "/usr/bin/stress-ng", "FIO": "f", "TASKSET": "t"}, "/o")
+        self.assertIn(f"--vm-method {cal()['VM_METHOD']} --vm-keep --vm-ops {cal()['VM_OPS_8G']}", files["part_0.sh"])
+        probe = spec_for("probe_vmm_write64_2g")["parts"][0]
+        self.assertEqual((probe["method"], probe["keep"], probe["vm_bytes"], probe["fixed_s"]),
+                         ("write64", True, "2G", float(cal()["PROBE_S"])))
+
+    def test_memcheck_schedule(self):
+        rows = make_schedule.make_memcheck_rows()
+        self.assertEqual(rows[0]["run_id"], "probe_idle")
+        probes = [r for r in rows if r["phase"] == "probe"]
+        self.assertEqual(len(probes), 1 + 4 * len(cases.MEMCHECK_DEFAULT_METHODS))
+        repeats = [r["case_id"] for r in rows if r["phase"] == "repeat"]
+        self.assertEqual(sorted(set(repeats)), sorted(make_schedule.MEMCHECK_REPEATS + make_schedule.MEMCHECK_SPLITS))
+        self.assertEqual(repeats.count("mem_2g"), 3)
+        self.assertEqual(len({r["run_id"] for r in rows}), len(rows))
+        tmp = tempfile.mkdtemp()
+        try:
+            path = os.path.join(tmp, "memcheck.csv")
+            make_schedule.write_schedule(path, rows, 0, 0, 0, memcheck=True)
+            with open(path, encoding="utf-8") as a, open(os.path.join(BENCH, "schedules", "memcheck.csv"), encoding="utf-8") as b:
+                self.assertEqual(a.read(), b.read(), "committed memcheck.csv differs from what make_schedule.py makes")
+        finally:
+            shutil.rmtree(tmp)
 
     def test_rq3_cpu_split_keeps_total_work_and_threads(self):
         total = int(cal()["CPU_OPS"])
@@ -137,8 +164,8 @@ class TestCaseList(unittest.TestCase):
             with open(CAL_PATH, encoding="utf-8") as f:
                 good = f.read()
             path = os.path.join(d, "cal.env")
-            for bad, msg in ((good.replace("CPU_OPS=360000", "CPU_OPS=360001"), "multiple of 8"),
-                             (good.replace("IO_BYTES=7516192768", "IO_BYTES=7516192769"), "multiple of 4096"),
+            for bad, msg in ((good.replace("CPU_OPS=412000", "CPU_OPS=412001"), "multiple of 8"),
+                             (good.replace("IO_BYTES=6623854592", "IO_BYTES=6623854593"), "multiple of 4096"),
                              (good.replace("VM_OPS_2G=", "#VM_OPS_2G="), "VM_OPS_2G"),
                              (good.replace("EPP_MAIN=balance_performance", "EPP_MAIN="), "EPP_MAIN")):
                 with open(path, "w", encoding="utf-8") as f:
