@@ -25,7 +25,7 @@ scripts/bench/calibration.env for the main session (by hand, committed).
                        the 8 GB job in TARGET seconds; multiple of 8
   VM_S                 the longest memory job (watchdog and estimate only)
   VM_METHOD, VM_KEEP   memory check only (probe_vmm_<method>_<n>g): the vm method whose
-                       data per operation per GB is steadiest across the four sizes
+                       data per operation is the same at all four sizes (smallest spread)
                        ('all' kept if within MEMCHECK_KEEP_ALL_PCT points), --vm-keep;
                        then VM_OPS_<n>G as above with that method
   Only the parts whose probes are in the session's schedule are reported.
@@ -103,10 +103,16 @@ def memory_methods(session, base, g_idle, target, put, keep, rep):
 
     For every method and buffer size B (probe_vmm_<method>_<B>g, fixed time,
     --vm-keep): DRAM data per operation = (traffic above idle - B, the first
-    touch of the buffer) / operations. A method whose operation is one pass over
-    the buffer gives about the same data per operation per GB at every size;
-    the spread of that value across the 4 sizes decides. 'all' is kept if its
-    spread is at most MEMCHECK_KEEP_ALL_PCT points above the best method."""
+    touch of the buffer) / operations. A fixed number of operations is a fixed
+    amount of data only if one operation moves the same data at every buffer
+    size (and so also in every RQ3 split); the spread of the data per operation
+    across the 4 sizes decides. 'all' is kept if its spread is at most
+    MEMCHECK_KEEP_ALL_PCT points above the best method.
+
+    (Changed 2026-10-30. The first version compared data per operation PER GB,
+    assuming one operation is one pass over the buffer. The memory check showed
+    that one write64 operation moves about 2 MiB at every size, so that rule
+    ranked the steadiest method last and kept 'all'.)"""
     import statistics
     rep.append(f"memory check (stress-ng --vm 1 --vm-keep; idle DRAM traffic {g_idle:.3f} GiB/s subtracted, "
                f"and the first touch of the buffer):")
@@ -124,16 +130,16 @@ def memory_methods(session, base, g_idle, target, put, keep, rep):
                 moved = (g - g_idle) * dur - gb
                 if moved > 0:
                     data[meth][gb] = (moved / ops, s)
-        line = ", ".join(f"{gb} GB {v[0] * 1024 / gb:.4f} MiB per op per GB ({v[1]:.0f} ops/s)"
+        line = ", ".join(f"{gb} GB {v[0] * 1024:.4f} MiB per op ({v[1]:.0f} ops/s)"
                          for gb, v in sorted(data[meth].items()))
         rep.append(f"  {meth}: {line or 'not measured'}")
     spread = {}
     for meth, d in data.items():
         if len(d) == 4:
-            norm = [v[0] / gb for gb, v in d.items()]
-            spread[meth] = statistics.stdev(norm) / statistics.mean(norm) * 100
+            per_op = [v[0] for v in d.values()]
+            spread[meth] = statistics.stdev(per_op) / statistics.mean(per_op) * 100
     for meth in methods:
-        rep.append(f"  {meth}: spread of data per operation per GB across the sizes: "
+        rep.append(f"  {meth}: spread of data per operation across the sizes: "
                    + (f"{spread[meth]:.1f} %" if meth in spread else "not all sizes measured"))
     if not spread:
         for gb in (1, 2, 4, 8):

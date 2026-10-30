@@ -176,7 +176,7 @@ class TestCalibrate(unittest.TestCase):
 
 
 class TestMemoryCheck(unittest.TestCase):
-    """Memory check: choose the vm method whose data per operation grows with the buffer size."""
+    """Memory check: choose the vm method whose data per operation is the same at every buffer size."""
 
     def setUp(self):
         self.p = Pilot()
@@ -184,47 +184,63 @@ class TestMemoryCheck(unittest.TestCase):
     def tearDown(self):
         self.p.close()
 
-    def probes(self, factors):
-        """factors[method] = 4 multipliers of the ideal 1e-4 GiB per operation per GB (1, 2, 4, 8 GB)."""
+    def probes(self, values, dur=30.0):
+        """values[method] = 4 x (MiB per operation, operations per second) for 1, 2, 4, 8 GB."""
         rows = ["order,run_id,phase,round,position,case_id,part_order", "1,probe_idle,probe,,1,probe_idle,"]
         self.p.run("probe_idle", res=dict(duration_s=60.0, dram_read_gib=1.2, dram_write_gib=0.6, other_cpu_per_s=0.02,
                                           temp_start_c=45.0), parts=[dict(kind="idle", done=60.0, duration_s=60.0)])
         g_idle = 1.8 / 60
-        for meth, fs in factors.items():
-            for gb, f in zip((1, 2, 4, 8), fs):
+        for meth, vals in values.items():
+            for gb, (mib, rate) in zip((1, 2, 4, 8), vals):
                 rid = f"probe_vmm_{meth}_{gb}g"
                 rows.append(f"{len(rows)},{rid},probe,,{len(rows)},{rid},")
-                ops = 1_280_000 // gb                                  # 40000/gb ops/s for 32 s
-                gib = gb * 1e-4 * f * ops + gb + g_idle * 32           # operations + first touch + idle
-                self.p.run(rid, res=dict(duration_s=32.0, dram_read_gib=gib * 0.5, dram_write_gib=gib * 0.5),
-                           parts=[dict(kind="vm", done=ops, duration_s=32.0)])
+                ops = int(rate * dur)
+                gib = mib / 1024 * ops + gb + g_idle * dur           # operations + first touch + idle
+                self.p.run(rid, res=dict(duration_s=dur, dram_read_gib=gib * 0.5, dram_write_gib=gib * 0.5),
+                           parts=[dict(kind="vm", done=ops, duration_s=dur)])
         put(os.path.join(self.p.dir, "schedule.csv"), "\n".join(rows) + "\n")
 
     def test_steadiest_method_wins(self):
-        self.probes({"all": (1.0, 1.9, 1.2, 1.0), "write64": (1, 1, 1, 1), "read64": (1.0, 1.0, 1.02, 0.98)})
+        two = [(2.0, 13000)] * 4                                     # 2 MiB per operation at every size
+        self.probes({"all": [(2.0, 13000), (3.8, 13000), (2.4, 13000), (2.0, 13000)], "write64": two,
+                     "wrrd128nt": [(0.7, 7000), (0.7, 7000), (0.714, 7000), (0.686, 7000)]})
         self.assertEqual(quiet(calibrate.main, ["calibrate.py", self.p.dir]), 0)
         c = self.p.cal()
         self.assertEqual((c["VM_METHOD"], c["VM_KEEP"]), ("write64", "1"))
-        self.assertEqual(c["VM_OPS_8G"], "300000")                     # 240 GiB / 8e-4 GiB per op
-        self.assertEqual(c["VM_OPS_1G"], "2400000")                    # 240 GiB / 1e-4 GiB per op
+        for gb in (1, 2, 4, 8):                                      # same data per op: same ops at every size
+            self.assertEqual(c[f"VM_OPS_{gb}G"], "780000")           # 13000 ops/s x 60 s
         self.assertEqual(c["VM_S"], "60.0")
-        self.assertEqual(c["CPU_OPS"], "412000")                       # not in this schedule: untouched
+        self.assertEqual(c["CPU_OPS"], "412000")                     # not in this schedule: untouched
         report = benchlib.read_text(os.path.join(self.p.dir, "calibration_report.txt"))
-        self.assertIn("write64: spread of data per operation per GB across the sizes: 0.0 %", report)
-        self.assertNotIn("CPU (stress-ng", report)                     # only the parts that were planned
+        self.assertIn("write64: spread of data per operation across the sizes: 0.0 %", report)
+        self.assertNotIn("CPU (stress-ng", report)                   # only the parts that were planned
         self.assertNotIn("I/O (fio", report)
         self.assertIn("'all'", report)
 
+    def test_real_numbers_of_the_first_memory_check(self):
+        """The first memory check on the laptop (2026-10-30): the old rule (per GB) chose 'all'; write64 is right."""
+        self.probes({
+            "all": [(0.0559, 103183), (0.0592, 86224), (0.0784, 70010), (0.1000, 58800)],
+            "write64": [(1.9895, 12947), (1.9866, 12725), (1.9768, 12416), (1.9672, 13012)],
+            "wrrd128nt": [(0.7191, 7588), (0.7316, 7292), (0.6988, 7023), (0.6696, 6237)]})
+        quiet(calibrate.main, ["calibrate.py", self.p.dir])
+        self.assertEqual(self.p.cal()["VM_METHOD"], "write64")
+        report = benchlib.read_text(os.path.join(self.p.dir, "calibration_report.txt"))
+        spreads = {m: float(report.split(f"  {m}: spread of data per operation across the sizes: ")[1].split(" %")[0])
+                   for m in ("all", "write64", "wrrd128nt")}
+        self.assertLess(spreads["write64"], 1.0)
+        self.assertGreater(spreads["all"], 20.0)
+
     def test_all_is_kept_when_nearly_as_steady(self):
-        self.probes({"all": (1.0, 1.01, 0.99, 1.0), "write64": (1, 1, 1, 1)})
+        self.probes({"all": [(2.0, 13000), (2.02, 13000), (1.98, 13000), (2.0, 13000)], "write64": [(2.0, 13000)] * 4})
         quiet(calibrate.main, ["calibrate.py", self.p.dir])
         self.assertEqual(self.p.cal()["VM_METHOD"], "all")
 
     def test_method_with_a_failed_size_is_not_chosen(self):
-        self.probes({"write64": (1, 1, 1, 1), "read64": (1.0, 1.0, 1.0, 1.0)})
+        self.probes({"write64": [(2.0, 13000)] * 4, "wrrd128nt": [(0.7, 7000)] * 4})
         shutil.rmtree(os.path.join(self.p.dir, "runs", "probe_vmm_write64_4g"))
         quiet(calibrate.main, ["calibrate.py", self.p.dir])
-        self.assertEqual(self.p.cal()["VM_METHOD"], "read64")
+        self.assertEqual(self.p.cal()["VM_METHOD"], "wrrd128nt")
 
 
 def write_table(path, columns, rows):
