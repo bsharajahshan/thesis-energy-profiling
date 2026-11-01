@@ -21,6 +21,11 @@ parallel and sequential are the same run) and the isolated CPU job of RQ2;
 mem_8g likewise for memory; io_seq is the isolated I/O job of RQ2. The `rq`
 label of these cases lists all research questions that use them.
 
+Governor check (run.sh govcheck, after the main session): three cases of the
+main session, each also with governor `performance` (gov_*) and with the
+default governor but EPP `performance` (epp_*). GOVCHECK_CASES holds only the
+new variants; the default runs are the cases themselves.
+
 Usage on the laptop (called by the session driver):
   cases.py specs <schedule.csv> <calibration.env> <session.env> <out_dir>
       writes <out_dir>/<run_id>.json for every schedule row (needs
@@ -99,9 +104,10 @@ def one_after_another(*keys):
 CASES = []
 
 
-def add(case_id, block, rq, mode, parts, expected, governor="main", logging=True):
+# epp: None = EPP_MAIN of the calibration for main-governor runs, untouched for control runs
+def add(case_id, block, rq, mode, parts, expected, governor="main", logging=True, epp=None):
     CASES.append({"case_id": case_id, "block": block, "rq": rq, "mode": mode, "parts": parts,
-                  "expected": expected, "governor": governor, "logging": logging})
+                  "expected": expected, "governor": governor, "logging": logging, "epp": epp})
 
 
 # RQ1: isolated jobs at four load levels; I/O sequential and random.
@@ -157,6 +163,19 @@ add("cost_cpu_ram_par_nolog", "cost", "control", "parallel", [cpu(8), vm(8)], to
     logging=False)
 add("cost_idle_nolog", "cost", "control", "parallel", [idle()], secs("IDLE_S"), logging=False)
 
+# Governor check (its own session, after the main session): do Ubuntu's default
+# power settings cause the low clock of the 50 % load runs (phases at about
+# 1.2 GHz) and of CPU + memory in parallel (about 2.4 GHz, below the power
+# limit)? The same jobs with governor 'performance' (the kernel then also sets
+# EPP 'performance'), and with the default governor but EPP 'performance' (what
+# Ubuntu's 'Performance' power mode sets). The default runs are the cases themselves.
+GOVCHECK_BASE = ["rq3_cpu_load50_n1", "rq3_cpu_load50_n4", "rq2_cpu_ram_par"]
+GOVCHECK_CASES = []
+for _cid in GOVCHECK_BASE:
+    _c = next(c for c in CASES if c["case_id"] == _cid)
+    GOVCHECK_CASES.append(dict(_c, case_id=f"gov_{_cid}", block="govcheck", rq="control", governor="control"))
+    GOVCHECK_CASES.append(dict(_c, case_id=f"epp_{_cid}", block="govcheck", rq="control", epp="performance"))
+
 # Idle runs before the first and after the last round (not inside the rounds).
 IDLE_CASE = {"case_id": "idle", "block": "idle", "rq": "all", "mode": "parallel", "parts": [idle()],
              "expected": secs("IDLE_S"), "governor": "main", "logging": True}
@@ -199,7 +218,7 @@ for _m in MEMCHECK_DEFAULT_METHODS:
                                "mode": "parallel", "parts": [vm(_gb, fixed="PROBE_S", method=_m, keep=True)],
                                "expected": secs("PROBE_S"), "governor": "main", "logging": True})
 
-CASE_BY_ID = {c["case_id"]: c for c in CASES + [IDLE_CASE] + PILOT_CASES + MEMCHECK_CASES}
+CASE_BY_ID = {c["case_id"]: c for c in CASES + [IDLE_CASE] + PILOT_CASES + MEMCHECK_CASES + GOVCHECK_CASES}
 
 
 def mixed_sequential(case):
@@ -339,7 +358,7 @@ def build_spec(row, cal, pins):
         "logging": case["logging"],
         "governor": cal["GOVERNOR_CONTROL"] if control else cal["GOVERNOR_MAIN"],
         # the performance governor fixes EPP itself (intel_pstate refuses writes)
-        "epp": None if control else cal["EPP_MAIN"],
+        "epp": None if control else case.get("epp") or cal["EPP_MAIN"],
         "expected_s": round(case["expected"](cal), 1),
         "block": case["block"], "rq": case["rq"],
         "round": int(row["round"]) if row.get("round") not in (None, "") else None,

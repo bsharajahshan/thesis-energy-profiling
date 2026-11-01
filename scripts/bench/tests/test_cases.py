@@ -302,5 +302,85 @@ class TestSchedule(unittest.TestCase):
         self.assertEqual(rows[0]["run_id"], "idle_start_1")
 
 
+GOVCHECK_SCHEDULE = os.path.join(BENCH, "schedules", "govcheck.csv")
+GOVCHECK_ARGS = {"rounds": 5, "idle": 5, "seed": 20261101}     # documented in schedules/govcheck.csv
+
+
+class TestGovcheck(unittest.TestCase):
+    def rows(self):
+        a = GOVCHECK_ARGS
+        return make_schedule.make_rows(a["rounds"], a["idle"], a["seed"], make_schedule.GOVCHECK_ROUND)
+
+    def test_variants_change_only_the_setting(self):
+        self.assertEqual(len(cases.GOVCHECK_CASES), 6)
+        self.assertFalse({c["case_id"] for c in cases.GOVCHECK_CASES} & {c["case_id"] for c in cases.CASES})
+        for base in cases.GOVCHECK_BASE:
+            b, g, e = spec_for(base), spec_for(f"gov_{base}"), spec_for(f"epp_{base}")
+            self.assertEqual((b["governor"], b["epp"]), ("powersave", "balance_performance"), base)
+            self.assertEqual((g["governor"], g["epp"]), ("performance", None), base)
+            self.assertEqual((e["governor"], e["epp"]), ("powersave", "performance"), base)
+            for v in (g, e):
+                self.assertEqual(v["parts"], b["parts"], base)
+                self.assertEqual((v["mode"], v["logging"], v["expected_s"]), (b["mode"], b["logging"], b["expected_s"]))
+                self.assertEqual((v["block"], v["rq"]), ("govcheck", "control"))
+
+    def test_main_cases_keep_their_settings(self):
+        # the epp field of the governor check must not leak into the main cases
+        for c in cases.CASES:
+            self.assertIsNone(c["epp"], c["case_id"])
+        self.assertEqual(spec_for("rq2_cpu_ram_par")["epp"], "balance_performance")
+
+    def test_specs_are_valid(self):
+        d = tempfile.mkdtemp()
+        try:
+            for c in cases.GOVCHECK_CASES:
+                path = os.path.join(d, "spec.json")
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(spec_for(c["case_id"]), f)
+                spec = benchlib.load_spec(path)
+                plan, _, _ = benchlib.build_plan(spec, {"STRESS_NG": "s", "FIO": "f", "TASKSET": "t"}, "/o")
+                self.assertEqual((plan["governor"], plan["epp"]),
+                                 ("performance", "") if c["governor"] == "control" else ("powersave", "performance"))
+        finally:
+            shutil.rmtree(d)
+
+    def test_schedule_shape(self):
+        rows = self.rows()
+        self.assertEqual(len(rows), 5 * 9 + 10)
+        self.assertEqual([r["phase"] for r in rows[:5]], ["idle_start"] * 5)
+        self.assertEqual([r["phase"] for r in rows[-5:]], ["idle_end"] * 5)
+        self.assertEqual(len({r["run_id"] for r in rows}), len(rows))
+        want = sorted(make_schedule.GOVCHECK_ROUND)
+        self.assertEqual(len(want), 9)
+        orders = []
+        for rnd in range(1, 6):
+            in_round = [r["case_id"] for r in rows if r["round"] == rnd]
+            self.assertEqual(sorted(in_round), want, f"round {rnd}")
+            orders.append(tuple(in_round))
+        self.assertEqual(len(set(orders)), 5)
+        self.assertTrue(all(r["part_order"] == "" for r in rows))
+
+    def test_committed_schedule_is_what_the_script_makes(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            path = os.path.join(tmp, "govcheck.csv")
+            make_schedule.write_schedule(path, self.rows(), **GOVCHECK_ARGS, govcheck=True)
+            with open(path, encoding="utf-8") as a, open(GOVCHECK_SCHEDULE, encoding="utf-8") as b:
+                self.assertEqual(a.read(), b.read(), "committed govcheck.csv differs from what make_schedule.py makes")
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_main_schedule_unchanged_by_the_case_list_option(self):
+        a = MAIN_ARGS
+        self.assertEqual(make_schedule.make_rows(a["rounds"], a["idle"], a["seed"]),
+                         make_schedule.make_rows(a["rounds"], a["idle"], a["seed"],
+                                                 [c["case_id"] for c in cases.CASES]))
+
+    def test_time_estimate_plausible(self):
+        total, per_block = make_schedule.estimate(self.rows(), cal(), 5)
+        self.assertTrue(2 * 3600 < total < 4 * 3600, total / 3600)
+        self.assertEqual(per_block["govcheck"][0], 30)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

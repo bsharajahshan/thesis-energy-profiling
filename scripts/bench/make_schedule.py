@@ -18,6 +18,7 @@ Usage:
   python -I make_schedule.py --rounds 5 --idle 5 --seed 20261029 --out schedules/main.csv
   python -I make_schedule.py --pilot --seed 20261029 --out schedules/pilot.csv
   python -I make_schedule.py --memcheck --out schedules/memcheck.csv
+  python -I make_schedule.py --govcheck --rounds 5 --idle 5 --seed 20261101 --out schedules/govcheck.csv
          [--calibration calibration.env]
 Prints the run counts and a time estimate (from the rough times in calibration.env).
 """
@@ -35,7 +36,8 @@ import cases  # noqa: E402
 COLUMNS = ["order", "run_id", "phase", "round", "position", "case_id", "part_order"]
 
 
-def make_rows(rounds, idle, seed):
+def make_rows(rounds, idle, seed, case_ids=None):
+    """case_ids: the cases of one round (default: every case of cases.CASES)."""
     rng = random.Random(seed)
     rows = []
 
@@ -46,7 +48,7 @@ def make_rows(rounds, idle, seed):
     for k in range(1, idle + 1):
         add(f"idle_start_{k}", "idle_start", "", k, "idle")
     for r in range(1, rounds + 1):
-        ids = [c["case_id"] for c in cases.CASES]
+        ids = list(case_ids) if case_ids else [c["case_id"] for c in cases.CASES]
         rng.shuffle(ids)
         for pos, case_id in enumerate(ids, 1):
             case = cases.CASE_BY_ID[case_id]
@@ -98,12 +100,19 @@ def make_memcheck_rows(repeats=3):
     return [{k: r[k] for k in COLUMNS} for r in rows]
 
 
-def write_schedule(path, rows, rounds, idle, seed, pilot=False, memcheck=False):
+# Governor check: rounds of the three cases with the default settings, with
+# governor 'performance' and with EPP 'performance' (cases.GOVCHECK_CASES), idle
+# runs before and after, like the main session.
+GOVCHECK_ROUND = cases.GOVCHECK_BASE + [c["case_id"] for c in cases.GOVCHECK_CASES]
+
+
+def write_schedule(path, rows, rounds, idle, seed, pilot=False, memcheck=False, govcheck=False):
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="") as f:
         made = ("--memcheck" if memcheck else f"--pilot --seed {seed}" if pilot
-                else f"--rounds {rounds} --idle {idle} --seed {seed}")
-        f.write(f"# made by make_schedule.py {made}; {len(cases.CASES)} cases, {len(rows)} runs\n")
+                else ("--govcheck " if govcheck else "") + f"--rounds {rounds} --idle {idle} --seed {seed}")
+        n_cases = len(GOVCHECK_ROUND) if govcheck else len(cases.CASES)
+        f.write(f"# made by make_schedule.py {made}; {n_cases} cases, {len(rows)} runs\n")
         w = csv.DictWriter(f, fieldnames=COLUMNS, lineterminator="\n")
         w.writeheader()
         w.writerows(rows)
@@ -132,8 +141,11 @@ def main(argv=None):
     ap.add_argument("--calibration", default=os.path.join(HERE, "calibration.env"))
     ap.add_argument("--pilot", action="store_true", help="pilot schedule: probes, repeats, one rehearsal round")
     ap.add_argument("--memcheck", action="store_true", help="memory check: vm method probes, memory repeats and splits")
+    ap.add_argument("--govcheck", action="store_true", help="governor check: three cases with three power settings")
     a = ap.parse_args(argv)
-    if a.memcheck:
+    if a.govcheck:
+        rows = make_rows(a.rounds, a.idle, a.seed, GOVCHECK_ROUND)
+    elif a.memcheck:
         rows = make_memcheck_rows()
         a.rounds, a.idle = 0, 0
     elif a.pilot:
@@ -141,11 +153,12 @@ def main(argv=None):
         a.rounds, a.idle = 1, 1
     else:
         rows = make_rows(a.rounds, a.idle, a.seed)
-    write_schedule(a.out, rows, a.rounds, a.idle, a.seed, pilot=a.pilot, memcheck=a.memcheck)
+    write_schedule(a.out, rows, a.rounds, a.idle, a.seed, pilot=a.pilot, memcheck=a.memcheck, govcheck=a.govcheck)
     cal = cases.load_calibration(a.calibration)
     total, per_block = estimate(rows, cal, a.rounds)
     kind = (" (memory check: method probes, memory repeats and splits)" if a.memcheck else
             " (pilot: probes, repeats, one rehearsal round)" if a.pilot else
+            f" (governor check: {a.rounds} rounds x {len(GOVCHECK_ROUND)} cases + {2 * a.idle} idle)" if a.govcheck else
             f" ({a.rounds} rounds x {len(cases.CASES)} cases + {2 * a.idle} idle)")
     print(f"{a.out}: {len(rows)} runs{kind}" + ("" if a.memcheck else f", seed {a.seed}"))
     for block, (n, t) in sorted(per_block.items(), key=lambda kv: -kv[1][1]):

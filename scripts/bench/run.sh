@@ -5,11 +5,12 @@
 #   bash scripts/bench/run.sh pilot     start (or continue) the pilot
 #   bash scripts/bench/run.sh memcheck  start (or continue) the memory check (after the pilot)
 #   bash scripts/bench/run.sh main      start (or continue) the main session
+#   bash scripts/bench/run.sh govcheck  start (or continue) the governor check (after the main session)
 #   bash scripts/bench/run.sh status    how far the sessions are
 #   bash scripts/bench/run.sh clean     delete everything the benchmark wrote
 #                                       (only after the archive has been sent)
 #
-# pilot / main: checks the laptop (preflight.py) and, if everything is fine,
+# pilot / memcheck / main / govcheck: checks the laptop (preflight.py) and, if everything is fine,
 # starts the session in the background, detached from this shell
 # (systemd-run --user; setsid if that is not possible), and returns within
 # seconds with "STARTED". It never asks anything and needs no sudo. While the
@@ -37,7 +38,7 @@ done
 FLOCK="$(command -v flock 2>/dev/null || echo /usr/bin/flock)"
 
 usage() {
-    echo "usage: bash scripts/bench/run.sh pilot | memcheck | main | status | clean"
+    echo "usage: bash scripts/bench/run.sh pilot | memcheck | main | govcheck | status | clean"
 }
 
 session_running() {   # the session holds $RESULTS/.session.lock for its whole life
@@ -104,7 +105,7 @@ fi
 case "${1:-}" in
     status) status; exit 0 ;;
     clean) clean; exit $? ;;
-    pilot|main|memcheck) STEP="$1" ;;
+    pilot|main|memcheck|govcheck) STEP="$1" ;;
     *) usage >&2; exit 2 ;;
 esac
 

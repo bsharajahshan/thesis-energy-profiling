@@ -18,6 +18,9 @@
 #      the end check finds them, the summary says CHECK FAILED
 #   S8 pilot: probes, calibration, repeats, rehearsal; the injected failed
 #      attempt and the killed Nextflow call are handled (pilot_report.txt)
+#   S9 memory check step (run.sh memcheck)
+#   S10 governor check step (run.sh govcheck): governor and EPP of every run as
+#      planned, EPP set back after an EPP run, archive and status
 # WSL1 has no systemd, so the setsid fallback of run.sh is what runs here.
 #
 # Usage: NEXTFLOW=/path/to/nextflow NXF_HOME=/path bash scripts/bench/tests/test_session.sh
@@ -400,7 +403,44 @@ check "no rehearsal point for a step without rehearsal" bash -c "! tar -xOzf '$M
 check "no processes left" no_leftovers
 (( FAIL > f0 )) && { show; tar -xOzf "$MA" memcheck/pilot_report.txt 2>/dev/null | sed 's/^/    report: /' | tail -n 20; }
 
-echo "S10. nothing read stdin or had a terminal"
+echo "S10. governor check step (run.sh govcheck)"
+f0=$FAIL
+runsh clean > /dev/null
+cat > "$ROOT/govcheck.csv" <<'EOF'
+# test governor check: EPP variant, then the default case (EPP must be set back), governor variant
+order,run_id,phase,round,position,case_id,part_order
+1,idle_start_1,idle_start,,1,idle,
+2,r1_epp_rq2_cpu_ram_par,round,1,1,epp_rq2_cpu_ram_par,
+3,r1_rq2_cpu_ram_par,round,1,2,rq2_cpu_ram_par,
+4,r1_gov_rq3_cpu_load50_n1,round,1,3,gov_rq3_cpu_load50_n1,
+5,idle_end_1,idle_end,,1,idle,
+EOF
+SES="$RES/govcheck"
+GA="$RES/thesis_govcheck.tar.gz"
+OUT="$(setsid -w env -i HOME="$HOME" PATH=/usr/bin:/bin BENCH_RESULTS="$RES" BENCH_SCHEDULE="$ROOT/govcheck.csv" \
+    BENCH_CALIBRATION="$ROOT/cal.env" BENCH_SYSROOT="$R" BENCH_EXTRA_PATH="$BIN:$(dirname "$NEXTFLOW")" \
+    BENCH_IO_DIR="$T/io" BENCH_DISK_STAT="$R/sys/block/sdb/stat" BENCH_SKIP_GIT=1 \
+    NXF_HOME="${NXF_HOME:-$HOME/.nextflow}" NXF_VER=26.04.4 bash "$BENCH/run.sh" govcheck < /dev/null 2>&1)"
+check "govcheck STARTED" out_has "^STARTED: govcheck session"
+check "start check names the EPP runs" out_has "runs with EPP performance (writable)"
+check "govcheck ends" wait_state done 400
+check "summary: DONE" first_line_is DONE
+check "end check passed" bash -c "tar -xOzf '$GA' govcheck/check.txt | grep -qx 'RESULT: PASSED'"
+check "archive holds only the session folder" bash -c "! tar -tzf '$GA' | grep -qv '^govcheck/'"
+settings="$(tar -xOzf "$GA" govcheck/results_all.csv 2>/dev/null | python3 -I -c 'import csv, sys
+cols = ("case_id", "governor_planned", "epp_planned", "governor_start", "epp_start")
+print(" ".join("%s:%s/%s/%s/%s" % tuple(r[c] for c in cols) for r in csv.DictReader(sys.stdin) if r["case_id"] != "idle"))')"
+check "EPP variant ran with powersave and EPP performance" grep -q "epp_rq2_cpu_ram_par:powersave/performance/powersave/performance" <<< "$settings"
+check "default run after it had EPP balance_performance again" \
+    grep -q " rq2_cpu_ram_par:powersave/balance_performance/powersave/balance_performance" <<< "$settings"
+check "governor variant ran with performance, EPP left to the kernel" grep -q "gov_rq3_cpu_load50_n1:performance//performance/" <<< "$settings"
+check "no processes left" no_leftovers
+runsh status
+check "status: govcheck DONE and the file to send" \
+    bash -c "grep -q '^govcheck: DONE' <<< \"\$1\" && grep -q 'send this file: $GA' <<< \"\$1\"" _ "$OUT"
+(( FAIL > f0 )) && { show; echo "    settings: $settings"; }
+
+echo "S11. nothing read stdin or had a terminal"
 check "no violations recorded" test ! -s "$CTL/violations"
 
 echo

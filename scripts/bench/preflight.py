@@ -390,26 +390,31 @@ def check_cpu(rep, env, cal, rows):
     epp_now = sorted({read1(e) or "?" for e in epps})
     rep.add("INFO", "governor", f"now: governor {','.join(map(str, gov_now))}, EPP {','.join(map(str, epp_now))}")
     need_gov = any(cases.CASE_BY_ID[r["case_id"]]["governor"] == "control" for r in rows)
+    # EPP values of runs that set their own (governor check), besides EPP_MAIN
+    own_epp = sorted({cases.CASE_BY_ID[r["case_id"]].get("epp") for r in rows} - {None, cal["EPP_MAIN"]})
     problems = []
     if not govs:
         problems.append("no cpufreq governor files")
     writable = lambda f: os.path.isfile(f) and os.access(f, os.W_OK)  # noqa: E731
     if need_gov and not all(writable(g) for g in govs):
         problems.append("governor not writable (needed for the governor control runs)")
-    if epps and not all(writable(e) for e in epps) and epp_now != [cal["EPP_MAIN"]]:
-        problems.append(f"EPP not writable and not {cal['EPP_MAIN']}")
+    if epps and not all(writable(e) for e in epps) and (own_epp or epp_now != [cal["EPP_MAIN"]]):
+        problems.append(f"EPP not writable and not {cal['EPP_MAIN']}" if not own_epp
+                        else f"EPP not writable (needed for the runs with EPP {', '.join(own_epp)})")
     avail = read1(os.path.join(base, "cpu0", "cpufreq", "scaling_available_governors")) or ""
     for g in {cal["GOVERNOR_MAIN"]} | ({cal["GOVERNOR_CONTROL"]} if need_gov else set()):
         if avail and g not in avail.split():
             problems.append(f"governor {g} not available ({avail})")
     avail_epp = read1(os.path.join(base, "cpu0", "cpufreq", "energy_performance_available_preferences")) or ""
-    if avail_epp and cal["EPP_MAIN"] not in avail_epp.split():
-        problems.append(f"EPP {cal['EPP_MAIN']} not available ({avail_epp})")
+    for e in [cal["EPP_MAIN"]] + own_epp:
+        if avail_epp and e not in avail_epp.split():
+            problems.append(f"EPP {e} not available ({avail_epp})")
     if problems:
         rep.add("FAIL", "governor", "; ".join(problems) + f" -> {SETUP_HINT}")
     else:
         rep.add("OK", "governor", f"main runs {cal['GOVERNOR_MAIN']} / {cal['EPP_MAIN']}"
-                + (f", control runs {cal['GOVERNOR_CONTROL']} (writable)" if need_gov else ""))
+                + (f", control runs {cal['GOVERNOR_CONTROL']} (writable)" if need_gov else "")
+                + (f", runs with EPP {', '.join(own_epp)} (writable)" if own_epp else ""))
 
 
 def meminfo():
@@ -564,7 +569,7 @@ def check_git(rep, env, repo, step, tools, session):
         return
     env["GIT_COMMIT"] = head.strip()
     if changed.strip():
-        level = "FAIL" if step == "main" else "WARN"
+        level = "FAIL" if step in ("main", "govcheck") else "WARN"
         rep.add(level, "git", "benchmark files differ from the commit: " + " ".join(changed.split()[1::2][:6])
                 + " -> git checkout -- scripts/bench workflows")
     else:
