@@ -50,6 +50,7 @@ The scripts are independent except one: `controls.py` reads
 | `rq3.py` | RQ3: the same work split into N tasks, partial load, low-clock phases | `rq3_*.csv`, `rq3_split.pdf`, `rq3_partial_load.pdf`, `rq3_low_clock.pdf` |
 | `mech.py` | why the memory job slows down next to the CPU job (fixed-time block) | `mech_*.csv`, `mech_memory.pdf`, `mech_cpu_ram_trace.pdf` |
 | `controls.py` | governor `performance` vs default; cost of the measurement tools | `controls_*.csv` (no figure) |
+| `govcheck.py` | governor check (second session): do the default power settings cause the low clocks? | `govcheck_*.csv`, `govcheck.pdf` |
 
 CSV results go to `results/rerun_2026-10-31/analysis/`. Figures go to
 `thesis/figures/` as PDF, with PNG previews in
@@ -59,22 +60,30 @@ CSV results go to `results/rerun_2026-10-31/analysis/`. Figures go to
 
 - Main test: Welch t-test, two-sided, 5 vs 5 runs.
 - Holm correction over all tests of one family (`rq1`, `rq2`, `rq3`, `mech`,
-  `controls`), columns `p_holm` and `holm_ok` in the `*_tests.csv` files.
+  `controls`, `govcheck`), columns `p_holm` and `holm_ok` in the `*_tests.csv` files.
 - Check: exact Mann-Whitney test, not corrected. With 5 vs 5 runs its smallest
   possible p-value is 0.0079.
 - Effect size: difference of the means, in units and in % of the reference
   mean, with a 95 % Welch confidence interval.
-- Idle reference: mean of the 10 idle runs. Active energy = energy minus idle
-  power times the run's duration, for package and DRAM separately (never added).
+- Idle reference: mean of the 10 idle runs of the same session. Active energy =
+  energy minus idle power times the run's duration, for package and DRAM
+  separately (never added).
 
 ## Governor check (second session)
 
-The governor check (`bash scripts/bench/run.sh govcheck` on the laptop) runs
-three cases of the main session with three power settings. Its archive is
-extracted into its own folder:
+The governor check (`bash scripts/bench/run.sh govcheck` on the laptop,
+2026-11-01/02, 55 valid runs) runs three cases of the main session with three
+power settings. Its archive is extracted into its own folder:
 
 ```
 python3 -I scripts/analysis/extract_rerun.py results/rerun_2026-10-31/govcheck thesis_govcheck.tar.gz
 ```
 
-Its analysis script (`govcheck.py`) is written once the data is there.
+Then, from the repo root (independent of the other scripts; it writes into the
+same `analysis/` folder, with the prefix `govcheck_`):
+
+```
+py scripts/analysis/rerun/govcheck.py
+```
+
+Every comparison stays inside this session, with its own idle reference.
